@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Process Video</title>
+  </head>
+  <body>
+    <h1>Process Video: {{ filename }}</h1>
+    <video id="video" width="320" height="240" controls>
+      <source
+        src="{{ url_for('uploaded_file', filename=filename) }}"
+        type="video/mp4"
+      />
+      Your browser does not support the video tag.
+    </video>
+    <form action="" method="post">
+      <label for="start_time">Start Time (seconds):</label>
+      <input type="text" id="start_time" name="start_time" /><br /><br />
+      <label for="end_time">End Time (seconds):</label>
+      <input type="text" id="end_time" name="end_time" /><br /><br />
+      <input type="submit" value="Clip Video and Extract Audio" />
+    </form>
+    <button onclick="setStartTime()">Set Start Time</button>
+    <button onclick="setEndTime()">Set End Time</button>
+
+    <script>
+      const video = document.getElementById("video");
+
+      function setStartTime() {
+        document.getElementById("start_time").value = video.currentTime;
+      }
+
+      function setEndTime() {
+        document.getElementById("end_time").value = video.currentTime;
+      }
+    </script>
+  </body>
+</html>

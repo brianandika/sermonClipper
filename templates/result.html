@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Processed Files</title>
+  </head>
+  <body>
+    <h1>Processed Files</h1>
+    <h2>Video</h2>
+    <video width="320" height="240" controls>
+      <source
+        src="{{ url_for('processed_file', filename=video_filename) }}"
+        type="video/mp4"
+      />
+      Your browser does not support the video tag.
+    </video>
+    <p>
+      <a
+        href="{{ url_for('processed_file', filename=video_filename) }}"
+        download="{{ video_filename }}"
+        >Download Video</a
+      >
+    </p>
+    <h2>Audio</h2>
+    <audio controls>
+      <source
+        src="{{ url_for('processed_file', filename=audio_filename) }}"
+        type="audio/mpeg"
+      />
+      Your browser does not support the audio element.
+    </audio>
+    <p>
+      <a
+        href="{{ url_for('processed_file', filename=audio_filename) }}"
+        download="{{ audio_filename }}"
+        >Download Audio</a
+      >
+    </p>
+    <a href="{{ url_for('index') }}">Go back to upload another file</a>
+  </body>
+</html>
