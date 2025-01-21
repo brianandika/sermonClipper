@@ -19,6 +19,14 @@
       <input type="text" id="start_time" name="start_time" /><br /><br />
       <label for="end_time">End Time (seconds):</label>
       <input type="text" id="end_time" name="end_time" /><br /><br />
+      
+      <div id="clips">
+        <label>Clips to Cut (start and end times in seconds):</label><br />
+        <div class="clip">
+        </div>
+      </div>
+      <button type="button" onclick="addClip()">Add Another Clip</button><br /><br />
+      
       <input type="submit" value="Clip Video and Extract Audio" />
     </form>
     <button onclick="setStartTime()">Set Start Time</button>
@@ -33,6 +41,17 @@
 
       function setEndTime() {
         document.getElementById("end_time").value = video.currentTime;
+      }
+
+      function addClip() {
+        const clipsDiv = document.getElementById("clips");
+        const newClipDiv = document.createElement("div");
+        newClipDiv.classList.add("clip");
+        newClipDiv.innerHTML = `
+          <input type="text" name="clip_start[]" placeholder="Start Time" />
+          <input type="text" name="clip_end[]" placeholder="End Time" /><br />
+        `;
+        clipsDiv.appendChild(newClipDiv);
       }
     </script>
   </body>
