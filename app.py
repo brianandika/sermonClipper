@@ -77,21 +77,62 @@ def process_file(filename):
             final_audio_seg = [] 
             for i in range(num_segments):
                 if i == 0:
-                    final_video_seg.append(input_video_s.filter('trim', start=start_time, end=clip_start[0]).filter('setpts', 'PTS-STARTPTS'))
+                    final_video_seg.append(input_video_s.filter('trim', start=start_time, end=clip_start[0]).filter('setpts', 'PTS-STARTPTS').filter('fps', fps=30))
                     final_audio_seg.append(input_audio_s.filter('atrim', start=start_time, end=clip_start[0]).filter('asetpts', 'PTS-STARTPTS'))
                 elif i == num_segments - 1:
-                    final_video_seg.append(input_video_s.filter('trim', start=clip_end[i-1], end=end_time).filter('setpts', 'PTS-STARTPTS'))
+                    final_video_seg.append(input_video_s.filter('trim', start=clip_end[i-1], end=end_time).filter('setpts', 'PTS-STARTPTS').filter('fps', fps=30))
                     final_audio_seg.append(input_audio_s.filter('atrim', start=clip_end[i-1], end=end_time).filter('asetpts', 'PTS-STARTPTS'))
                 else:
-                    final_video_seg.append(input_video_s.filter('trim', start=clip_end[i-1], end=clip_start[i]).filter('setpts', 'PTS-STARTPTS'))
+                    final_video_seg.append(input_video_s.filter('trim', start=clip_end[i-1], end=clip_start[i]).filter('setpts', 'PTS-STARTPTS').filter('fps', fps=30))
                     final_audio_seg.append(input_audio_s.filter('atrim', start=clip_end[i-1], end=clip_start[i]).filter('asetpts', 'PTS-STARTPTS'))
             
             # Concatenate video and audio
-            print(final_video_seg)
-            print(final_audio_seg)
-            print(num_segments)
-            final_video = ffmpeg.concat(*final_video_seg, n=num_segments, v=1, a=0)
-            final_audio = ffmpeg.concat(*final_audio_seg, n=num_segments, v=0, a=1)
+            cumulative_duration = 0.0  # total length so far (in seconds)
+
+            final_video = final_video_seg[0]
+            final_audio = final_audio_seg[0]
+            first_segment_length = clip_start[0] - start_time
+            cumulative_duration += first_segment_length
+            
+            for i in range(1, len(final_video_seg)):
+
+                # Calculate the length of the next segment
+                if i == num_segments - 1:
+                    # last segment is from clip_end[i-1] to end_time
+                    next_segment_length = end_time - clip_end[i-1]
+                else:
+                    # middle segment is from clip_end[i-1] to clip_start[i]
+                    next_segment_length = clip_start[i] - clip_end[i-1]
+
+                # The offset is the time when the crossfade should begin
+                # Typically you’d start crossfade exactly at the end of cumulative_duration
+                offset = cumulative_duration - (cross_dissolve_duration/2)
+                if offset < 0:
+                    offset = 0  # don't go negative
+
+                final_video = ffmpeg.filter(
+                    [final_video, final_video_seg[i]],
+                    'xfade',
+                    transition='fade',
+                    duration=cross_dissolve_duration,
+                    offset=offset
+                )
+                final_audio = ffmpeg.filter(
+                    [final_audio, final_audio_seg[i]],
+                    'acrossfade',
+                    d=cross_dissolve_duration,
+                    # c1='exp',
+                    # c2='exp'
+                )
+
+                # Add the length of this segment to our running total
+                cumulative_duration += next_segment_length
+            
+            # Add fade in and fade out
+            final_video = final_video.filter('fade', type='in', start_time=0, duration=cross_dissolve_duration)
+            final_video = final_video.filter('fade', type='out', start_time=(cumulative_duration - cross_dissolve_duration*1.5), duration=cross_dissolve_duration)
+            final_audio = final_audio.filter('afade', t='in', st=0, d=cross_dissolve_duration)
+            final_audio = final_audio.filter('afade', t='out', st=(cumulative_duration - cross_dissolve_duration*1.5), d=cross_dissolve_duration)
 
         ffmpeg.output(final_video, final_audio, output_video_path).overwrite_output().run()
         
