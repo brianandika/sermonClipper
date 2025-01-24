@@ -9,6 +9,23 @@ from flask import (
 import ffmpeg
 import os
 
+import subprocess
+
+
+def detect_hardware():
+    try:
+        # Check for NVIDIA GPU (CUDA)
+        result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True)
+        if "cuda" in result.stdout:
+            return "cuda"
+        # Check for Apple Silicon (VideoToolbox)
+        if "videotoolbox" in result.stdout:
+            return "apple"
+    except Exception as e:
+        print(f"Error detecting hardware: {e}")
+    return "cpu"
+
+
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
@@ -40,6 +57,9 @@ def upload_file():
 def process_file(filename):
     filepath = os.path.join(UPLOAD_FOLDER, filename)
     if request.method == "POST":
+        # Detect hardware
+        hardware_accel = detect_hardware()
+
         start_time = float(request.form["start_time"])
         end_time = float(request.form["end_time"])
         clip_start = request.form.getlist("clip_start[]")
@@ -199,9 +219,25 @@ def process_file(filename):
                 d=cross_dissolve_duration,
             )
 
+        video_codec = "libx264"
+        audio_codec = "aac"
+        global_opts = []
+
+        # For Apple Silicon (videotoolbox) or NVIDIA (cuda) or CPU
+        if hardware_accel == "apple":
+            video_codec = "h264_videotoolbox"
+            global_opts = ["-hwaccel", "videotoolbox"]
+        elif hardware_accel == "cuda":
+            video_codec = "h264_nvenc"
+            global_opts = ["-hwaccel", "cuda"]
+
         ffmpeg.output(
-            final_video, final_audio, output_video_path
-        ).overwrite_output().run()
+            final_video,
+            final_audio,
+            output_video_path,
+            vcodec=video_codec,
+            acodec=audio_codec,
+        ).global_args(*global_opts).overwrite_output().run()
 
         # Extract audio
         ffmpeg.input(output_video_path).output(
