@@ -17,7 +17,7 @@
         background: #fff;
         padding: 20px;
         border-radius: 6px;
-        box-shadow: 0 0 5px rgba(0,0,0,0.2);
+        box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
       }
       h1 {
         text-align: center;
@@ -81,7 +81,7 @@
         </div>
         <button type="button" onclick="addClip()">Add Another Clip</button>
         <br /><br />
-        
+
         <input type="submit" value="Clip Video and Extract Audio" />
       </form>
     </div>
@@ -89,11 +89,13 @@
       const video = document.getElementById("video");
 
       function setStartTime() {
-        document.getElementById("start_time").value = video.currentTime.toFixed(2);
+        document.getElementById("start_time").value =
+          video.currentTime.toFixed(2);
       }
 
       function setEndTime() {
-        document.getElementById("end_time").value = video.currentTime.toFixed(2);
+        document.getElementById("end_time").value =
+          video.currentTime.toFixed(2);
       }
 
       function addClip() {
