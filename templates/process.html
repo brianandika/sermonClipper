@@ -4,43 +4,96 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Process Video</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #f4f4f4;
+        margin: 0;
+        padding: 0;
+      }
+      .container {
+        max-width: 900px;
+        margin: 30px auto;
+        background: #fff;
+        padding: 20px;
+        border-radius: 6px;
+        box-shadow: 0 0 5px rgba(0,0,0,0.2);
+      }
+      h1 {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      /* Center entire form content */
+      form {
+        max-width: 600px;
+        margin: 0 auto;
+        text-align: center;
+      }
+      label {
+        display: inline-block;
+        width: 150px;
+      }
+      .time-input {
+        margin-bottom: 15px;
+      }
+      .clip {
+        margin: 10px 0;
+      }
+      .clip input {
+        margin: 5px;
+      }
+      video {
+        display: block;
+        margin: 0 auto 20px auto;
+        width: 800px;
+        height: 450px;
+      }
+      button {
+        cursor: pointer;
+      }
+    </style>
   </head>
   <body>
-    <h1>Process Video: {{ filename }}</h1>
-    <video id="video" width="320" height="240" controls>
-      <source
-        src="{{ url_for('uploaded_file', filename=filename) }}"
-        type="video/mp4"
-      />
-      Your browser does not support the video tag.
-    </video>
-    <form action="" method="post">
-      <label for="start_time">Start Time (seconds):</label>
-      <input type="text" id="start_time" name="start_time" /><br /><br />
-      <label for="end_time">End Time (seconds):</label>
-      <input type="text" id="end_time" name="end_time" /><br /><br />
-      
-      <div id="clips">
-        <label>Clips to Cut (start and end times in seconds):</label><br />
-        <div class="clip">
+    <div class="container">
+      <h1>Process Video: {{ filename }}</h1>
+      <video id="video" controls>
+        <source
+          src="{{ url_for('uploaded_file', filename=filename) }}"
+          type="video/mp4"
+        />
+        Your browser does not support the video tag.
+      </video>
+      <form action="" method="post">
+        <div class="time-input">
+          <label for="start_time">Start Time (s):</label>
+          <input type="text" id="start_time" name="start_time" />
+          <button type="button" onclick="setStartTime()">Set</button>
         </div>
-      </div>
-      <button type="button" onclick="addClip()">Add Another Clip</button><br /><br />
-      
-      <input type="submit" value="Clip Video and Extract Audio" />
-    </form>
-    <button onclick="setStartTime()">Set Start Time</button>
-    <button onclick="setEndTime()">Set End Time</button>
+        <div class="time-input">
+          <label for="end_time">End Time (s):</label>
+          <input type="text" id="end_time" name="end_time" />
+          <button type="button" onclick="setEndTime()">Set</button>
+        </div>
 
+        <div id="clips">
+          <label>Clips to Cut:</label><br />
+          <div class="clip"></div>
+        </div>
+        <button type="button" onclick="addClip()">Add Another Clip</button>
+        <br /><br />
+        
+        <input type="submit" value="Clip Video and Extract Audio" />
+      </form>
+    </div>
     <script>
       const video = document.getElementById("video");
 
       function setStartTime() {
-        document.getElementById("start_time").value = video.currentTime;
+        document.getElementById("start_time").value = video.currentTime.toFixed(2);
       }
 
       function setEndTime() {
-        document.getElementById("end_time").value = video.currentTime;
+        document.getElementById("end_time").value = video.currentTime.toFixed(2);
       }
 
       function addClip() {
@@ -49,9 +102,27 @@
         newClipDiv.classList.add("clip");
         newClipDiv.innerHTML = `
           <input type="text" name="clip_start[]" placeholder="Start Time" />
-          <input type="text" name="clip_end[]" placeholder="End Time" /><br />
+          <button type="button" onclick="setClipStart(this)">Set</button>
+          <input type="text" name="clip_end[]" placeholder="End Time" />
+          <button type="button" onclick="setClipEnd(this)">Set</button><br />
         `;
         clipsDiv.appendChild(newClipDiv);
+      }
+
+      function setClipStart(button) {
+        const parent = button.parentElement;
+        const input = parent.querySelector('input[name="clip_start[]"]');
+        if (input) {
+          input.value = video.currentTime.toFixed(2);
+        }
+      }
+
+      function setClipEnd(button) {
+        const parent = button.parentElement;
+        const input = parent.querySelector('input[name="clip_end[]"]');
+        if (input) {
+          input.value = video.currentTime.toFixed(2);
+        }
       }
     </script>
   </body>
