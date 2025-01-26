@@ -63,7 +63,7 @@
         />
         Your browser does not support the video tag.
       </video>
-      <form action="" method="post">
+      <form action="" method="post" enctype="multipart/form-data">
         <div class="time-input">
           <label for="start_time">Start Time (s):</label>
           <input type="text" id="start_time" name="start_time" />
@@ -81,6 +81,14 @@
         </div>
         <button type="button" onclick="addClip()">Add Another Clip</button>
         <br /><br />
+
+        <label for="image">Upload Cover Image:</label>
+        <input
+          type="file"
+          id="image"
+          name="image"
+          accept="image/*"
+        /><br /><br />
 
         <input type="submit" value="Clip Video and Extract Audio" />
       </form>
