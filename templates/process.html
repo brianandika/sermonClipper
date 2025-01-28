@@ -40,12 +40,22 @@
             <button type="button" class="btn" onclick="setStartTime()">
               Set
             </button>
+            <button
+              type="button"
+              class="btn"
+              onclick="jumpToTime('start_time')"
+            >
+              Jump
+            </button>
           </div>
           <div class="flex">
             <label for="end_time">End Time (s):</label>
             <input type="text" id="end_time" name="end_time" />
             <button type="button" class="btn" onclick="setEndTime()">
               Set
+            </button>
+            <button type="button" class="btn" onclick="jumpToTime('end_time')">
+              Jump
             </button>
           </div>
         </div>
@@ -145,8 +155,10 @@
         newClipDiv.innerHTML = `
           <input type="text" name="clip_start[]" placeholder="Start Time" />
           <button type="button" class="btn" onclick="setClipStart(this)">Set</button>
+          <button type="button" class="btn" onclick="jumpToClipTime(this, 'clip_start[]')">Jump</button>
           <input type="text" name="clip_end[]" placeholder="End Time" />
           <button type="button" class="btn" onclick="setClipEnd(this)">Set</button>
+          <button type="button" class="btn" onclick="jumpToClipTime(this, 'clip_end[]')">Jump</button>
         `;
         clipsDiv.appendChild(newClipDiv);
       }
@@ -164,6 +176,23 @@
         const input = parent.querySelector('input[name="clip_end[]"]');
         if (input) {
           input.value = video.currentTime.toFixed(4);
+        }
+      }
+
+      function jumpToClipTime(button, inputName) {
+        const parent = button.parentElement;
+        const input = parent.querySelector(`input[name="${inputName}"]`);
+        const time = parseFloat(input.value);
+        if (!isNaN(time)) {
+          video.currentTime = time;
+        }
+      }
+
+      function jumpToTime(inputId) {
+        const timeInput = document.getElementById(inputId);
+        const time = parseFloat(timeInput.value);
+        if (!isNaN(time)) {
+          video.currentTime = time;
         }
       }
 
