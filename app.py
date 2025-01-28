@@ -102,7 +102,7 @@ def add_fade_in_out(media, fade_duration=1):
 
 def create_still_image_sequence(image_path, duration):
     try:
-        output_video = "./temp_still.mp4"
+        output_video = "./temp/temp_still_clip.mp4"
         command = [
             "ffmpeg",
             "-loop",
@@ -136,8 +136,6 @@ def create_still_image_sequence(image_path, duration):
         print(f"An error occurred during processing: {e}")
 
     return None
-
-    return {"video": video, "audio": audio, "duration": duration}
 
 
 def output_video(medium, output):
@@ -181,8 +179,10 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
 PROCESSED_FOLDER = "processed"
+TEMP_FOLDER = "temp"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+os.makedirs(TEMP_FOLDER, exist_ok=True)
 
 
 @app.route("/")
