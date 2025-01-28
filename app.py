@@ -26,6 +26,157 @@ def detect_hardware():
     return "cpu"
 
 
+def get_clip(media, start, end, fps=30):
+    video_clip = (
+        media.video.trim(start=start, end=end)
+        .setpts("PTS-STARTPTS")
+        .filter("fps", fps=fps)
+    )
+    audio_clip = media.audio.filter("atrim", start=start, end=end).filter(
+        "asetpts", "PTS-STARTPTS"
+    )
+    return {"video": video_clip, "audio": audio_clip, "duration": end - start}
+
+
+def concat_media_with_transition(clips, transition="fade", transition_duration=1):
+    video = clips[0]["video"]
+    audio = clips[0]["audio"]
+    cumulative_duration = clips[0]["duration"]
+
+    for i in range(1, len(clips)):
+        next_video_clip = clips[i]["video"]
+        next_audio_clip = clips[i]["audio"]
+
+        offset = cumulative_duration - transition_duration
+        video = ffmpeg.filter(
+            [video, next_video_clip],
+            "xfade",
+            transition=transition,
+            duration=transition_duration,
+            offset=offset,
+        )
+
+        audio = ffmpeg.filter(
+            [audio, next_audio_clip],
+            "acrossfade",
+            duration=transition_duration,
+            c1="tri",
+            c2="tri",
+        )
+
+        cumulative_duration += clips[i]["duration"] - transition_duration
+
+    return {"video": video, "audio": audio, "duration": cumulative_duration}
+
+
+def add_fade_in_out(media, fade_duration=1):
+    video = media["video"]
+    audio = media["audio"]
+    duration = media["duration"]
+
+    ret_video = video.filter(
+        "fade",
+        type="in",
+        duration=fade_duration,
+    ).filter(
+        "fade",
+        type="out",
+        start_time=duration - fade_duration,
+        duration=fade_duration,
+    )
+
+    ret_audio = audio.filter(
+        "afade",
+        type="in",
+        start_sample=0,
+        duration=fade_duration,
+    ).filter(
+        "afade",
+        type="out",
+        start_time=duration - fade_duration,
+        duration=fade_duration,
+    )
+
+    return {"video": ret_video, "audio": ret_audio, "duration": duration}
+
+
+def create_still_image_sequence(image_path, duration):
+    try:
+        output_video = "./temp_still.mp4"
+        command = [
+            "ffmpeg",
+            "-loop",
+            "1",
+            "-i",
+            image_path,
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-t",
+            str(duration),
+            "-vf",
+            "scale=1920:1080",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-pix_fmt",
+            "yuv420p",
+            output_video,
+            "-y",
+        ]
+
+        subprocess.run(command, check=True)
+
+        video = ffmpeg.input(output_video)
+        return get_clip(video, 0, duration)
+
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred during processing: {e}")
+
+    return None
+
+    return {"video": video, "audio": audio, "duration": duration}
+
+
+def output_video(medium, output):
+    hardware_accel = detect_hardware()
+
+    video_codec = "libx264"
+    audio_codec = "aac"
+    global_opts = []
+
+    # For Apple Silicon (videotoolbox) or NVIDIA (cuda) or CPU
+    if hardware_accel == "apple":
+        video_codec = "h264_videotoolbox"
+        global_opts = ["-hwaccel", "videotoolbox"]
+    elif hardware_accel == "cuda":
+        video_codec = "h264_nvenc"
+        global_opts = ["-hwaccel", "cuda"]
+
+    video = medium["video"]
+    audio = medium["audio"]
+
+    # show the command
+    process = (
+        ffmpeg.output(video, audio, output, vcodec=video_codec, acodec=audio_codec)
+        .global_args(*global_opts)
+        .overwrite_output()
+    )
+
+    print("Video Output: ", process.compile())
+    process.run()
+
+
+def output_audio(medium, output):
+    audio = medium["audio"]
+
+    process = ffmpeg.output(audio, output).overwrite_output()
+    print("Audio Output: ", process.compile())
+    process.run()
+
+
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
@@ -64,16 +215,6 @@ def process_file(filename):
         end_time = float(request.form["end_time"])
         clip_start = request.form.getlist("clip_start[]")
         clip_end = request.form.getlist("clip_end[]")
-        print(clip_start)
-        print(type(clip_start))
-        print(len(clip_start))
-        print(clip_end)
-        cross_dissolve_duration = 1  # Duration of the cross dissolve effect in seconds
-        output_video_path = os.path.join(PROCESSED_FOLDER, f"clipped_{filename}")
-        output_audio_path = os.path.join(
-            PROCESSED_FOLDER, f"{os.path.splitext(filename)[0]}.mp3"
-        )
-
         if (
             len(clip_start) > 0
             and len(clip_end) > 0
@@ -85,164 +226,69 @@ def process_file(filename):
             clip_start = None
             clip_end = None
 
+        # settings
+        cross_dissolve_duration = 1  # Duration of the cross dissolve effect in seconds
+        fps = 30
+
+        # get output paths
+        output_video_path = os.path.join(PROCESSED_FOLDER, f"clipped_{filename}")
+        output_audio_path = os.path.join(
+            PROCESSED_FOLDER, f"{os.path.splitext(filename)[0]}.mp3"
+        )
+
         # get number of segments
         num_segments = 1
         if clip_start and clip_end:
             num_segments = len(clip_start) + 1
 
         # Load input
-        input_file = ffmpeg.input(filepath, ss=start_time, to=end_time)
+        input_file = ffmpeg.input(filepath)
 
-        if num_segments == 1:
-            final_video = input_file.video.filter(
-                "fade", type="in", start_time=0, duration=cross_dissolve_duration
-            ).filter(
-                "fade",
-                type="out",
-                start_time=(end_time - start_time - cross_dissolve_duration),
-                duration=cross_dissolve_duration,
-            )
-            final_audio = input_file.audio.filter(
-                "afade", t="in", st=0, d=cross_dissolve_duration
-            ).filter(
-                "afade",
-                t="out",
-                st=(end_time - start_time - cross_dissolve_duration),
-                d=cross_dissolve_duration,
-            )
-        else:
-            input_video_s = input_file.video
-            input_audio_s = input_file.audio
-
-            final_video_seg = []
-            final_audio_seg = []
-            for i in range(num_segments):
-                if i == 0:
-                    final_video_seg.append(
-                        input_video_s.filter(
-                            "trim", start=start_time, end=clip_start[0]
-                        )
-                        .filter("setpts", "PTS-STARTPTS")
-                        .filter("fps", fps=30)
+        # get the clip
+        clips = []
+        for i in range(num_segments):
+            if i == 0:
+                clips.append(
+                    get_clip(
+                        input_file,
+                        start_time,
+                        clip_start[0] if num_segments > 1 else end_time,
                     )
-                    final_audio_seg.append(
-                        input_audio_s.filter(
-                            "atrim", start=start_time, end=clip_start[0]
-                        ).filter("asetpts", "PTS-STARTPTS")
-                    )
-                elif i == num_segments - 1:
-                    final_video_seg.append(
-                        input_video_s.filter(
-                            "trim", start=clip_end[i - 1], end=end_time
-                        )
-                        .filter("setpts", "PTS-STARTPTS")
-                        .filter("fps", fps=30)
-                    )
-                    final_audio_seg.append(
-                        input_audio_s.filter(
-                            "atrim", start=clip_end[i - 1], end=end_time
-                        ).filter("asetpts", "PTS-STARTPTS")
-                    )
-                else:
-                    final_video_seg.append(
-                        input_video_s.filter(
-                            "trim", start=clip_end[i - 1], end=clip_start[i]
-                        )
-                        .filter("setpts", "PTS-STARTPTS")
-                        .filter("fps", fps=30)
-                    )
-                    final_audio_seg.append(
-                        input_audio_s.filter(
-                            "atrim", start=clip_end[i - 1], end=clip_start[i]
-                        ).filter("asetpts", "PTS-STARTPTS")
-                    )
-
-            # Concatenate video and audio
-            cumulative_duration = 0.0  # total length so far (in seconds)
-
-            final_video = final_video_seg[0]
-            final_audio = final_audio_seg[0]
-            first_segment_length = clip_start[0] - start_time
-            cumulative_duration += first_segment_length
-
-            for i in range(1, len(final_video_seg)):
-
-                # Calculate the length of the next segment
-                if i == num_segments - 1:
-                    # last segment is from clip_end[i-1] to end_time
-                    next_segment_length = end_time - clip_end[i - 1]
-                else:
-                    # middle segment is from clip_end[i-1] to clip_start[i]
-                    next_segment_length = clip_start[i] - clip_end[i - 1]
-
-                # The offset is the time when the crossfade should begin
-                # Typically you’d start crossfade exactly at the end of cumulative_duration
-                offset = cumulative_duration - (cross_dissolve_duration / 2)
-                if offset < 0:
-                    offset = 0  # don't go negative
-
-                final_video = ffmpeg.filter(
-                    [final_video, final_video_seg[i]],
-                    "xfade",
-                    transition="fade",
-                    duration=cross_dissolve_duration,
-                    offset=offset,
                 )
-                final_audio = ffmpeg.filter(
-                    [final_audio, final_audio_seg[i]],
-                    "acrossfade",
-                    d=cross_dissolve_duration,
-                    # c1='exp',
-                    # c2='exp'
-                )
+            elif i == num_segments - 1:
+                clips.append(get_clip(input_file, clip_end[i - 1], end_time))
+            else:
+                clips.append(get_clip(input_file, clip_end[i - 1], clip_start[i]))
 
-                # Add the length of this segment to our running total
-                cumulative_duration += next_segment_length
+        media = concat_media_with_transition(
+            clips, transition="fade", transition_duration=1
+        )
 
-            # Add fade in and fade out
-            final_video = final_video.filter(
-                "fade", type="in", start_time=0, duration=cross_dissolve_duration
-            )
-            final_video = final_video.filter(
-                "fade",
-                type="out",
-                start_time=(cumulative_duration - cross_dissolve_duration * 1.5),
-                duration=cross_dissolve_duration,
-            )
-            final_audio = final_audio.filter(
-                "afade", t="in", st=0, d=cross_dissolve_duration
-            )
-            final_audio = final_audio.filter(
-                "afade",
-                t="out",
-                st=(cumulative_duration - cross_dissolve_duration * 1.5),
-                d=cross_dissolve_duration,
-            )
+        media = add_fade_in_out(media, fade_duration=1)
 
-        video_codec = "libx264"
-        audio_codec = "aac"
-        global_opts = []
+        output_audio(media, output_audio_path)
 
-        # For Apple Silicon (videotoolbox) or NVIDIA (cuda) or CPU
-        if hardware_accel == "apple":
-            video_codec = "h264_videotoolbox"
-            global_opts = ["-hwaccel", "videotoolbox"]
-        elif hardware_accel == "cuda":
-            video_codec = "h264_nvenc"
-            global_opts = ["-hwaccel", "cuda"]
+        # Get uploaded image if provided
+        if "image" in request.files:
+            image = request.files["image"]
+            if image.filename != "":
+                # Save image
+                image_path = os.path.join(UPLOAD_FOLDER, image.filename)
+                image.save(image_path)
 
-        ffmpeg.output(
-            final_video,
-            final_audio,
-            output_video_path,
-            vcodec=video_codec,
-            acodec=audio_codec,
-        ).global_args(*global_opts).overwrite_output().run()
+                # Create still image sequence
+                still_image_media = create_still_image_sequence(image_path, 5)
 
-        # Extract audio
-        ffmpeg.input(output_video_path).output(
-            output_audio_path, acodec="libmp3lame"
-        ).overwrite_output().run()
+                if still_image_media:
+                    clips.insert(0, still_image_media)
+
+        media = concat_media_with_transition(
+            clips, transition="fade", transition_duration=0.5
+        )
+
+        media = add_fade_in_out(media, fade_duration=1)
+
+        output_video(media, output_video_path)
 
         return render_template(
             "result.html",
