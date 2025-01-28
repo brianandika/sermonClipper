@@ -4,54 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Process Video</title>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        background: #f4f4f4;
-        margin: 0;
-        padding: 0;
-      }
-      .container {
-        max-width: 900px;
-        margin: 30px auto;
-        background: #fff;
-        padding: 20px;
-        border-radius: 6px;
-        box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
-      }
-      h1 {
-        text-align: center;
-        margin-bottom: 20px;
-      }
-      /* Center entire form content */
-      form {
-        max-width: 600px;
-        margin: 0 auto;
-        text-align: center;
-      }
-      label {
-        display: inline-block;
-        width: 150px;
-      }
-      .time-input {
-        margin-bottom: 15px;
-      }
-      .clip {
-        margin: 10px 0;
-      }
-      .clip input {
-        margin: 5px;
-      }
-      video {
-        display: block;
-        margin: 0 auto 20px auto;
-        width: 800px;
-        height: 450px;
-      }
-      button {
-        cursor: pointer;
-      }
-    </style>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/styles.css') }}"
+    />
   </head>
   <body>
     <div class="container">
@@ -61,36 +17,41 @@
           src="{{ url_for('uploaded_file', filename=filename) }}"
           type="video/mp4"
         />
-        Your browser does not support the video tag.
       </video>
-      <form action="" method="post" enctype="multipart/form-data">
-        <div class="time-input">
-          <label for="start_time">Start Time (s):</label>
-          <input type="text" id="start_time" name="start_time" />
-          <button type="button" onclick="setStartTime()">Set</button>
-        </div>
-        <div class="time-input">
-          <label for="end_time">End Time (s):</label>
-          <input type="text" id="end_time" name="end_time" />
-          <button type="button" onclick="setEndTime()">Set</button>
+
+      <form action="" method="post" enctype="multipart/form-data" class="grid">
+        <div class="time-inputs flex">
+          <div class="flex">
+            <label for="start_time">Start Time (s):</label>
+            <input type="text" id="start_time" name="start_time" />
+            <button type="button" class="btn" onclick="setStartTime()">
+              Set
+            </button>
+          </div>
+          <div class="flex">
+            <label for="end_time">End Time (s):</label>
+            <input type="text" id="end_time" name="end_time" />
+            <button type="button" class="btn" onclick="setEndTime()">
+              Set
+            </button>
+          </div>
         </div>
 
-        <div id="clips">
-          <label>Clips to Cut:</label><br />
+        <div id="clips" class="grid">
+          <label>Clips to Cut:</label>
           <div class="clip"></div>
         </div>
-        <button type="button" onclick="addClip()">Add Another Clip</button>
-        <br /><br />
 
-        <label for="image">Upload Cover Image:</label>
-        <input
-          type="file"
-          id="image"
-          name="image"
-          accept="image/*"
-        /><br /><br />
+        <button type="button" class="btn" onclick="addClip()">
+          Add Another Clip
+        </button>
 
-        <input type="submit" value="Clip Video and Extract Audio" />
+        <div class="flex centered">
+          <label for="image">Upload Cover Image:</label>
+          <input type="file" id="image" name="image" accept="image/*" />
+        </div>
+
+        <button type="submit" class="btn">Process Video</button>
       </form>
     </div>
     <script>
@@ -109,12 +70,12 @@
       function addClip() {
         const clipsDiv = document.getElementById("clips");
         const newClipDiv = document.createElement("div");
-        newClipDiv.classList.add("clip");
+        newClipDiv.classList.add("clip", "flex", "centered");
         newClipDiv.innerHTML = `
           <input type="text" name="clip_start[]" placeholder="Start Time" />
-          <button type="button" onclick="setClipStart(this)">Set</button>
+          <button type="button" class="btn" onclick="setClipStart(this)">Set</button>
           <input type="text" name="clip_end[]" placeholder="End Time" />
-          <button type="button" onclick="setClipEnd(this)">Set</button><br />
+          <button type="button" class="btn" onclick="setClipEnd(this)">Set</button>
         `;
         clipsDiv.appendChild(newClipDiv);
       }
