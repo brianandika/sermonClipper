@@ -13,6 +13,7 @@ import tempfile
 import threading
 
 import subprocess
+import json
 
 progress = 0
 progress_message = ""
@@ -264,6 +265,34 @@ def output_audio(medium, output):
             os.unlink(progress_pipe)
 
 
+def get_video_fps(filepath):
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=r_frame_rate",
+                "-of",
+                "json",
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        ffprobe_output = json.loads(result.stdout)
+        r_frame_rate = ffprobe_output["streams"][0]["r_frame_rate"]
+        num, den = map(int, r_frame_rate.split("/"))
+        fps = num / den
+        return fps
+    except Exception as e:
+        print(f"Error getting FPS: {e}")
+        return 30  # Default FPS
+
+
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
@@ -403,6 +432,13 @@ def status():
     return jsonify(
         progress=progress, processing=processing, progress_message=progress_message
     )
+
+
+@app.route("/get_fps/<filename>")
+def get_fps(filename):
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    fps = get_video_fps(filepath)
+    return jsonify(fps=fps)
 
 
 if __name__ == "__main__":
