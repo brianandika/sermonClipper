@@ -150,12 +150,13 @@ video, audio {
 }
 
 .timestamp-indicator {
-  height: 100%;
-  background-color: red;
-  width: 0;
+  width: 2px; /* Set the width to a small value to create a vertical line */
+  height: 100%; /* Make it span the full height of the timestamp bar */
+  background-color: red; /* Set the color of the line */
   position: absolute;
   top: 0;
   left: 0;
+  transform: translateX(-50%); /* Center the line on its position */
 }
 
 .current-timestamp {
@@ -175,6 +176,25 @@ video, audio {
 
 .video-utility-bar > * {
   margin: 0 10px;
+}
+
+.remove-indicator {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background-color: rgba(255, 0, 0, 0.5); /* Semi-transparent red */
+}
+
+.remove-indicator.start {
+  left: 0;
+}
+
+.remove-indicator.end {
+  right: 0;
+}
+
+.remove-indicator.clip {
+  background-color: rgba(255, 165, 0, 0.5); /* Semi-transparent orange */
 }
 
 @media (max-width: 768px) {

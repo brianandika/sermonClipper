@@ -25,6 +25,9 @@
       </div>
       <div class="timestamp-bar">
         <div class="timestamp-indicator"></div>
+        <div class="remove-indicator start"></div>
+        <div class="remove-indicator end"></div>
+        <div id="clip-indicators"></div>
       </div>
       <form
         id="process-form"
@@ -111,7 +114,7 @@
         const currentTime = video.currentTime;
         const duration = video.duration;
         const percentage = (currentTime / duration) * 100;
-        timestampIndicator.style.width = percentage + "%";
+        timestampIndicator.style.left = percentage + "%";
         currentTimestamp.textContent = formatTime(currentTime);
       });
 
@@ -141,11 +144,13 @@
       function setStartTime() {
         document.getElementById("start_time").value =
           video.currentTime.toFixed(4);
+        updateRemoveIndicators();
       }
 
       function setEndTime() {
         document.getElementById("end_time").value =
           video.currentTime.toFixed(4);
+        updateRemoveIndicators();
       }
 
       function addClip() {
@@ -161,6 +166,7 @@
           <button type="button" class="btn" onclick="jumpToClipTime(this, 'clip_end[]')">Jump</button>
         `;
         clipsDiv.appendChild(newClipDiv);
+        updateRemoveIndicators();
       }
 
       function setClipStart(button) {
@@ -169,6 +175,7 @@
         if (input) {
           input.value = video.currentTime.toFixed(4);
         }
+        updateRemoveIndicators();
       }
 
       function setClipEnd(button) {
@@ -177,6 +184,7 @@
         if (input) {
           input.value = video.currentTime.toFixed(4);
         }
+        updateRemoveIndicators();
       }
 
       function jumpToClipTime(button, inputName) {
@@ -220,6 +228,66 @@
 
       // Initial check for processing status
       checkProcessingStatus();
+
+      const removeIndicatorStart = document.querySelector(
+        ".remove-indicator.start"
+      );
+      const removeIndicatorEnd = document.querySelector(
+        ".remove-indicator.end"
+      );
+      const clipIndicators = document.getElementById("clip-indicators");
+
+      function updateRemoveIndicators() {
+        console.log("Updating remove indicators");
+        const startTime =
+          parseFloat(document.getElementById("start_time").value) || 0;
+        const endTime =
+          parseFloat(document.getElementById("end_time").value) ||
+          video.duration;
+
+        const startPercentage = (startTime / video.duration) * 100;
+        const endPercentage =
+          ((video.duration - endTime) / video.duration) * 100;
+
+        removeIndicatorStart.style.width = startPercentage + "%";
+        removeIndicatorEnd.style.width = endPercentage + "%";
+
+        // Clear existing clip indicators
+        clipIndicators.innerHTML = "";
+
+        // Create new clip indicators
+        const clips = document.querySelectorAll(".clip");
+        clips.forEach((clip) => {
+          clip_start = clip.querySelector('input[name="clip_start[]"]');
+          clip_end = clip.querySelector('input[name="clip_end[]"]');
+          if (!clip_start || !clip_end) {
+            return;
+          }
+          const clipStart = parseFloat(clip_start.value) || 0;
+          const clipEnd = parseFloat(clip_end.value) || 0;
+          const clipStartPercentage = (clipStart / video.duration) * 100;
+          const clipEndPercentage = (clipEnd / video.duration) * 100;
+          const clipWidth = clipEndPercentage - clipStartPercentage;
+
+          const clipIndicator = document.createElement("div");
+          clipIndicator.classList.add("remove-indicator", "clip");
+          clipIndicator.style.left = clipStartPercentage + "%";
+          clipIndicator.style.width = clipWidth + "%";
+          clipIndicators.appendChild(clipIndicator);
+        });
+      }
+
+      document
+        .getElementById("start_time")
+        .addEventListener("input", updateRemoveIndicators);
+      document
+        .getElementById("end_time")
+        .addEventListener("input", updateRemoveIndicators);
+      document
+        .getElementById("clips")
+        .addEventListener("input", updateRemoveIndicators);
+
+      video.addEventListener("loadedmetadata", updateRemoveIndicators);
     </script>
   </body>
 </html>
