@@ -5,11 +5,18 @@ from flask import (
     redirect,
     url_for,
     send_from_directory,
+    jsonify,
 )
 import ffmpeg
 import os
+import tempfile
+import threading
 
 import subprocess
+
+progress = 0
+progress_message = ""
+processing = False
 
 
 def detect_hardware():
@@ -139,6 +146,18 @@ def create_still_image_sequence(image_path, duration):
 
 
 def output_video(medium, output):
+    global progress, progress_message, processing
+    progress = 0
+    progress_message = "Processing video..."
+    processing = True
+
+    # Create named pipe for progress
+    progress_pipe = os.path.join(
+        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}"
+    )
+    if not os.path.exists(progress_pipe):
+        os.mkfifo(progress_pipe)
+
     hardware_accel = detect_hardware()
 
     video_codec = "libx264"
@@ -157,22 +176,92 @@ def output_video(medium, output):
     audio = medium["audio"]
 
     # show the command
-    process = (
-        ffmpeg.output(video, audio, output, vcodec=video_codec, acodec=audio_codec)
-        .global_args(*global_opts)
-        .overwrite_output()
-    )
+    try:
+        process = (
+            ffmpeg.output(video, audio, output, vcodec=video_codec, acodec=audio_codec)
+            .global_args(*global_opts)
+            .global_args("-progress", progress_pipe)
+            .overwrite_output()
+        )
 
-    print("Video Output: ", process.compile())
-    process.run()
+        # Start ffmpeg in background
+        thread = threading.Thread(target=process.run)
+        thread.start()
+
+        # Read progress from pipe
+        with open(progress_pipe, "r") as pipe:
+            while thread.is_alive():
+                line = pipe.readline()
+                if "out_time_us=" in line:
+                    value = line.split("=")[1].strip()
+                    if value.isdigit():
+                        time_us = int(value)
+                        total_duration = (
+                            medium["duration"] * 1000 * 1000
+                        )  # in microseconds
+                        if total_duration > 0:
+                            progress = min(int((time_us / total_duration) * 100), 100)
+
+        thread.join()
+        progress = 100
+
+    finally:
+        processing = False
+        progress_message = ""
+        # Cleanup
+        if os.path.exists(progress_pipe):
+            os.unlink(progress_pipe)
 
 
 def output_audio(medium, output):
+    global progress, progress_message, processing
+    progress = 0
+    progress_message = "Processing audio..."
+    processing = True
     audio = medium["audio"]
 
-    process = ffmpeg.output(audio, output).overwrite_output()
-    print("Audio Output: ", process.compile())
-    process.run()
+    # Create named pipe for progress
+    progress_pipe = os.path.join(
+        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}"
+    )
+    if not os.path.exists(progress_pipe):
+        os.mkfifo(progress_pipe)
+
+    try:
+        # Add progress pipe to ffmpeg command
+        process = (
+            ffmpeg.output(audio, output)
+            .global_args("-progress", progress_pipe)
+            .overwrite_output()
+        )
+
+        # Start ffmpeg in background
+        thread = threading.Thread(target=process.run)
+        thread.start()
+
+        # Read progress from pipe
+        with open(progress_pipe, "r") as pipe:
+            while thread.is_alive():
+                line = pipe.readline()
+                if "out_time_us=" in line:
+                    value = line.split("=")[1].strip()
+                    if value.isdigit():
+                        time_us = int(value)
+                        total_duration = (
+                            medium["duration"] * 1000 * 1000
+                        )  # in microseconds
+                        if total_duration > 0:
+                            progress = min(int((time_us / total_duration) * 100), 100)
+
+        thread.join()
+        progress = 100
+
+    finally:
+        processing = False
+        progress_message = ""
+        # Cleanup
+        if os.path.exists(progress_pipe):
+            os.unlink(progress_pipe)
 
 
 app = Flask(__name__)
@@ -306,6 +395,14 @@ def uploaded_file(filename):
 @app.route("/processed/<filename>")
 def processed_file(filename):
     return send_from_directory(PROCESSED_FOLDER, filename)
+
+
+@app.route("/status")
+def status():
+    global progress, progress_message, processing
+    return jsonify(
+        progress=progress, processing=processing, progress_message=progress_message
+    )
 
 
 if __name__ == "__main__":

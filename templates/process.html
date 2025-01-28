@@ -19,7 +19,13 @@
         />
       </video>
 
-      <form action="" method="post" enctype="multipart/form-data" class="grid">
+      <form
+        id="process-form"
+        action=""
+        method="post"
+        enctype="multipart/form-data"
+        class="grid"
+      >
         <div class="time-inputs flex">
           <div class="flex">
             <label for="start_time">Start Time (s):</label>
@@ -54,6 +60,19 @@
         <button type="submit" class="btn">Process Video</button>
       </form>
     </div>
+
+    <!-- Modal for progress bar -->
+    <div id="progress-modal" class="modal">
+      <div class="modal-content">
+        <h2 id="progress-title">Processing...</h2>
+        <div class="progress-bar">
+          <div class="progress">
+            <div class="loading-animation"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script>
       const video = document.getElementById("video");
 
@@ -95,6 +114,31 @@
           input.value = video.currentTime.toFixed(2);
         }
       }
+
+      // Poll the status endpoint to update the progress bar
+      function checkProcessingStatus() {
+        fetch("/status")
+          .then((response) => response.json())
+          .then((data) => {
+            const progress = data.progress;
+            const progress_message = data.progress_message;
+            const processing = data.processing;
+
+            if (processing) {
+              document.getElementById("progress-modal").style.display = "block";
+              document.querySelector(".progress").style.width = progress + "%";
+              document.getElementById("progress-title").innerText =
+                progress_message;
+            } else {
+              document.getElementById("progress-modal").style.display = "none";
+            }
+
+            setTimeout(checkProcessingStatus, 500);
+          });
+      }
+
+      // Initial check for processing status
+      checkProcessingStatus();
     </script>
   </body>
 </html>
