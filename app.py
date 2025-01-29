@@ -34,15 +34,12 @@ def detect_hardware():
     return "cpu"
 
 
-def get_clip(media, start, end, fps=30):
-    video_clip = (
-        media.video.trim(start=start, end=end)
-        .setpts("PTS-STARTPTS")
-        .filter("fps", fps=fps)
-    )
-    audio_clip = media.audio.filter("atrim", start=start, end=end).filter(
-        "asetpts", "PTS-STARTPTS"
-    )
+def get_clip(media_path, start, end, fps=30):
+    # it is faster to input the video and then trim it
+    media = ffmpeg.input(media_path, ss=start, to=end)
+    video_clip = media.video.setpts("PTS-STARTPTS").filter("fps", fps=fps)
+    audio_clip = media.audio.filter("asetpts", "PTS-STARTPTS")
+
     return {"video": video_clip, "audio": audio_clip, "duration": end - start}
 
 
@@ -137,8 +134,7 @@ def create_still_image_sequence(image_path, duration):
 
         subprocess.run(command, check=True)
 
-        video = ffmpeg.input(output_video)
-        return get_clip(video, 0, duration)
+        return get_clip(output_video, 0, duration)
 
     except subprocess.CalledProcessError as e:
         print(f"An error occurred during processing: {e}")
@@ -359,24 +355,21 @@ def process_file(filename):
         if clip_start and clip_end:
             num_segments = len(clip_start) + 1
 
-        # Load input
-        input_file = ffmpeg.input(filepath)
-
         # get the clip
         clips = []
         for i in range(num_segments):
             if i == 0:
                 clips.append(
                     get_clip(
-                        input_file,
+                        filepath,
                         start_time,
                         clip_start[0] if num_segments > 1 else end_time,
                     )
                 )
             elif i == num_segments - 1:
-                clips.append(get_clip(input_file, clip_end[i - 1], end_time))
+                clips.append(get_clip(filepath, clip_end[i - 1], end_time))
             else:
-                clips.append(get_clip(input_file, clip_end[i - 1], clip_start[i]))
+                clips.append(get_clip(filepath, clip_end[i - 1], clip_start[i]))
 
         media = concat_media_with_transition(
             clips, transition="fade", transition_duration=1

@@ -143,13 +143,13 @@
 
       function setStartTime() {
         document.getElementById("start_time").value =
-          video.currentTime.toFixed(4);
+          video.currentTime.toFixed(3);
         updateRemoveIndicators();
       }
 
       function setEndTime() {
         document.getElementById("end_time").value =
-          video.currentTime.toFixed(4);
+          video.currentTime.toFixed(3);
         updateRemoveIndicators();
       }
 
@@ -173,7 +173,7 @@
         const parent = button.parentElement;
         const input = parent.querySelector('input[name="clip_start[]"]');
         if (input) {
-          input.value = video.currentTime.toFixed(4);
+          input.value = video.currentTime.toFixed(3);
         }
         updateRemoveIndicators();
       }
@@ -182,7 +182,7 @@
         const parent = button.parentElement;
         const input = parent.querySelector('input[name="clip_end[]"]');
         if (input) {
-          input.value = video.currentTime.toFixed(4);
+          input.value = video.currentTime.toFixed(3);
         }
         updateRemoveIndicators();
       }
@@ -238,7 +238,7 @@
       const clipIndicators = document.getElementById("clip-indicators");
 
       function updateRemoveIndicators() {
-        console.log("Updating remove indicators");
+        // console.log("Updating remove indicators");
         const startTime =
           parseFloat(document.getElementById("start_time").value) || 0;
         const endTime =
