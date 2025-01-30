@@ -5,13 +5,21 @@ const timestampIndicator = document.querySelector(".timestamp-indicator");
 const currentTimestamp = document.getElementById("current-timestamp");
 const stepBackButton = document.getElementById("step-back");
 const stepForwardButton = document.getElementById("step-forward");
+const playBackwardsButton = document.getElementById("play-backwards");
+const playForwardsButton = document.getElementById("play-forwards");
+const playbackSpeedIndicator = document.getElementById(
+  "playback-speed-indicator"
+);
 
 const source = video.querySelector("source");
 const videoSrc = source.getAttribute("src");
 const filename = videoSrc.split("/").pop();
 
 let frameRate = 30; // Default frame rate
-
+let playbackInterval = null;
+let playbackSpeedOptions = [-4, -2, -1, 1, 2, 4];
+const defaultPlaybackSpeedIndex = 3; // Default to 1x forward
+let currentPlaybackSpeedIndex = defaultPlaybackSpeedIndex;
 // Fetch the FPS from the server
 fetch(`/get_fps/${filename}`)
   .then((response) => response.json())
@@ -39,6 +47,51 @@ stepForwardButton.addEventListener("click", function () {
     video.duration,
     video.currentTime + 1 / frameRate
   ); // Step forward by one frame
+});
+
+function changePlaybackSpeed(playbackSpeed) {
+  clearInterval(playbackInterval);
+  if (playbackSpeed < 0) {
+    video.pause(); // Pause the video before playing backwards
+    playbackInterval = setInterval(() => {
+      if (video.currentTime <= 0) {
+        clearInterval(playbackInterval);
+      } else {
+        video.currentTime += playbackSpeed / frameRate;
+      }
+    }, 1000 / frameRate);
+  } else {
+    video.playbackRate = playbackSpeed;
+    video.play();
+  }
+  updatePlaybackSpeedIndicator(playbackSpeed);
+}
+
+function updatePlaybackSpeedIndicator(playbackSpeed) {
+  const direction = playbackSpeed < 0 ? "Backward" : "Forward";
+  const speed = Math.abs(playbackSpeed);
+  playbackSpeedIndicator.textContent = `Speed: ${speed}x ${direction}`;
+}
+
+playBackwardsButton.addEventListener("click", function () {
+  currentPlaybackSpeedIndex = Math.max(0, currentPlaybackSpeedIndex - 1);
+  const playbackSpeed = playbackSpeedOptions[currentPlaybackSpeedIndex];
+  changePlaybackSpeed(playbackSpeed);
+});
+
+playForwardsButton.addEventListener("click", function () {
+  currentPlaybackSpeedIndex = Math.min(
+    playbackSpeedOptions.length - 1,
+    currentPlaybackSpeedIndex + 1
+  );
+  const playbackSpeed = playbackSpeedOptions[currentPlaybackSpeedIndex];
+  changePlaybackSpeed(playbackSpeed);
+});
+
+video.addEventListener("play", function () {
+  currentPlaybackSpeedIndex = defaultPlaybackSpeedIndex;
+  const playbackSpeed = playbackSpeedOptions[currentPlaybackSpeedIndex];
+  changePlaybackSpeed(playbackSpeed);
 });
 
 function formatTime(seconds) {
@@ -230,8 +283,7 @@ video.addEventListener("loadedmetadata", async function () {
     barWidth: 2,
     cursorWidth: 1,
     hideScrollbar: true,
-    // Pass the video element in the `media` param
-    media: document.querySelector("video"),
+    media: video, // Pass the video element in the `media` param
     peaks: peaksData.data, // Pass the precomputed peaks data
   });
 });
