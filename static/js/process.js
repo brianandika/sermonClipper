@@ -1,13 +1,19 @@
+import WaveSurfer from "https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.esm.js";
+
 const video = document.getElementById("video");
 const timestampIndicator = document.querySelector(".timestamp-indicator");
 const currentTimestamp = document.getElementById("current-timestamp");
 const stepBackButton = document.getElementById("step-back");
 const stepForwardButton = document.getElementById("step-forward");
 
+const source = video.querySelector("source");
+const videoSrc = source.getAttribute("src");
+const filename = videoSrc.split("/").pop();
+
 let frameRate = 30; // Default frame rate
 
 // Fetch the FPS from the server
-fetch(`/get_fps/{{ filename }}`)
+fetch(`/get_fps/${filename}`)
   .then((response) => response.json())
   .then((data) => {
     frameRate = data.fps;
@@ -61,14 +67,36 @@ function addClip() {
   newClipDiv.classList.add("clip", "flex", "centered");
   newClipDiv.innerHTML = `
     <input type="text" name="clip_start[]" placeholder="Start Time" />
-    <button type="button" class="btn" onclick="setClipStart(this)">Set</button>
-    <button type="button" class="btn" onclick="jumpToClipTime(this, 'clip_start[]')">Jump</button>
+    <button type="button" class="btn set-clip-start">Set</button>
+    <button type="button" class="btn jump-to-clip-start">Jump</button>
     <input type="text" name="clip_end[]" placeholder="End Time" />
-    <button type="button" class="btn" onclick="setClipEnd(this)">Set</button>
-    <button type="button" class="btn" onclick="jumpToClipTime(this, 'clip_end[]')">Jump</button>
+    <button type="button" class="btn set-clip-end">Set</button>
+    <button type="button" class="btn jump-to-clip-end">Jump</button>
   `;
   clipsDiv.appendChild(newClipDiv);
   updateRemoveIndicators();
+
+  // Add event listeners for the new buttons
+  newClipDiv
+    .querySelector(".set-clip-start")
+    .addEventListener("click", function () {
+      setClipStart(this);
+    });
+  newClipDiv
+    .querySelector(".jump-to-clip-start")
+    .addEventListener("click", function () {
+      jumpToClipTime(this, "clip_start[]");
+    });
+  newClipDiv
+    .querySelector(".set-clip-end")
+    .addEventListener("click", function () {
+      setClipEnd(this);
+    });
+  newClipDiv
+    .querySelector(".jump-to-clip-end")
+    .addEventListener("click", function () {
+      jumpToClipTime(this, "clip_end[]");
+    });
 }
 
 function setClipStart(button) {
@@ -152,8 +180,8 @@ function updateRemoveIndicators() {
   // Create new clip indicators
   const clips = document.querySelectorAll(".clip");
   clips.forEach((clip) => {
-    clip_start = clip.querySelector('input[name="clip_start[]"]');
-    clip_end = clip.querySelector('input[name="clip_end[]"]');
+    const clip_start = clip.querySelector('input[name="clip_start[]"]');
+    const clip_end = clip.querySelector('input[name="clip_end[]"]');
     if (!clip_start || !clip_end) {
       return;
     }
@@ -182,3 +210,47 @@ document
   .addEventListener("input", updateRemoveIndicators);
 
 video.addEventListener("loadedmetadata", updateRemoveIndicators);
+
+// Fetch peaks data and initialize WaveSurfer
+video.addEventListener("loadedmetadata", async function () {
+  console.log("Video metadata loaded");
+
+  // Fetch peaks data
+  const response = await fetch(`/get_peaks/${filename}`);
+  const peaksData = await response.json();
+
+  const wavesurfer = WaveSurfer.create({
+    container: "#waveform",
+    waveColor: "#2563eb",
+    progressColor: "#2563eb",
+    cursorColor: "#ee1515",
+    backend: "MediaElement",
+    mediaControls: false,
+    height: 80,
+    barWidth: 2,
+    cursorWidth: 1,
+    hideScrollbar: true,
+    // Pass the video element in the `media` param
+    media: document.querySelector("video"),
+    peaks: peaksData.data, // Pass the precomputed peaks data
+  });
+});
+
+// Add event listeners for the buttons
+document
+  .querySelector(".btn.set-start-time")
+  .addEventListener("click", setStartTime);
+document
+  .querySelector(".btn.set-end-time")
+  .addEventListener("click", setEndTime);
+document.querySelector(".btn.add-clip").addEventListener("click", addClip);
+document
+  .querySelector(".btn.jump-to-start-time")
+  .addEventListener("click", function () {
+    jumpToTime("start_time");
+  });
+document
+  .querySelector(".btn.jump-to-end-time")
+  .addEventListener("click", function () {
+    jumpToTime("end_time");
+  });

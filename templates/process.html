@@ -24,6 +24,7 @@
         <button id="step-forward" class="btn">Step Forward</button>
       </div>
       <div class="timestamp-bar">
+        <div id="waveform"></div>
         <div class="timestamp-indicator"></div>
         <div class="remove-indicator start"></div>
         <div class="remove-indicator end"></div>
@@ -40,26 +41,14 @@
           <div class="flex">
             <label for="start_time">Start Time (s):</label>
             <input type="text" id="start_time" name="start_time" />
-            <button type="button" class="btn" onclick="setStartTime()">
-              Set
-            </button>
-            <button
-              type="button"
-              class="btn"
-              onclick="jumpToTime('start_time')"
-            >
-              Jump
-            </button>
+            <button type="button" class="btn set-start-time">Set</button>
+            <button type="button" class="btn jump-to-start-time">Jump</button>
           </div>
           <div class="flex">
             <label for="end_time">End Time (s):</label>
             <input type="text" id="end_time" name="end_time" />
-            <button type="button" class="btn" onclick="setEndTime()">
-              Set
-            </button>
-            <button type="button" class="btn" onclick="jumpToTime('end_time')">
-              Jump
-            </button>
+            <button type="button" class="btn set-end-time">Set</button>
+            <button type="button" class="btn jump-to-end-time">Jump</button>
           </div>
         </div>
 
@@ -68,9 +57,7 @@
           <div class="clip"></div>
         </div>
 
-        <button type="button" class="btn" onclick="addClip()">
-          Add Another Clip
-        </button>
+        <button type="button" class="btn add-clip">Add Another Clip</button>
 
         <div class="flex centered">
           <label for="image">Upload Cover Image:</label>
@@ -93,6 +80,9 @@
       </div>
     </div>
 
-    <script src="{{ url_for('static', filename='js/process.js') }}"></script>
+    <script
+      type="module"
+      src="{{ url_for('static', filename='js/process.js') }}"
+    ></script>
   </body>
 </html>

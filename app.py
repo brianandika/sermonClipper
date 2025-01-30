@@ -289,6 +289,95 @@ def get_video_fps(filepath):
         return 30  # Default FPS
 
 
+def generate_peaks(filepath):
+    try:
+        # Create temp WAV file
+        temp_wav = os.path.join(TEMP_FOLDER, f"{os.path.basename(filepath)}.wav")
+
+        # Extract audio to WAV
+        extract_command = [
+            "ffmpeg",
+            "-i",
+            filepath,
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",  # 16kHz for speech
+            "-ac",
+            "1",
+            "-af",
+            "highpass=f=300,lowpass=f=3000,volume=1.0",  # Speech frequency range
+            temp_wav,
+        ]
+
+        subprocess.run(extract_command, check=True, capture_output=True)
+
+        # Analyze peaks
+        peaks_command = [
+            "ffmpeg",
+            "-i",
+            temp_wav,
+            "-filter_complex",
+            "astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level",
+            "-f",
+            "null",
+            "-",
+        ]
+
+        result = subprocess.run(peaks_command, capture_output=True, text=True)
+
+        # Process peaks with speech-optimized normalization
+        peaks = []
+        speech_min = -40  # Background noise threshold (dB)
+        speech_max = -10  # Loud speech threshold (dB)
+
+        for line in result.stderr.split("\n"):
+            if "RMS_level" in line:
+                try:
+                    value = float(line.split("=")[1])
+                    if value == float("-inf") or value < speech_min:
+                        normalized = 0.0  # Below speech threshold
+                    else:
+                        # Emphasize speech range
+                        normalized = min(
+                            1.0,
+                            max(0.0, (value - speech_min) / (speech_max - speech_min)),
+                        )
+                    peaks.append(normalized)
+                except ValueError:
+                    peaks.append(0.0)
+
+        # Ensure we have at least some peaks
+        if not peaks:
+            peaks = [0.0] * 1000  # Default empty waveform
+
+        # Cache results
+        cache_file = os.path.join(
+            TEMP_FOLDER, f"{os.path.basename(filepath)}.peaks.json"
+        )
+        peak_data = {
+            "data": peaks,
+            "length": len(peaks),
+            "bits": 16,
+            "sample_rate": 16000,
+        }
+
+        with open(cache_file, "w") as f:
+            json.dump(peak_data, f)
+
+        # Cleanup
+        os.remove(temp_wav)
+
+        return peak_data
+
+    except Exception as e:
+        print(f"Error generating peaks: {e}")
+        if os.path.exists(temp_wav):
+            os.remove(temp_wav)
+        return None
+
+
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
@@ -432,6 +521,16 @@ def get_fps(filename):
     filepath = os.path.join(UPLOAD_FOLDER, filename)
     fps = get_video_fps(filepath)
     return jsonify(fps=fps)
+
+
+@app.route("/get_peaks/<filename>")
+def get_peaks(filename):
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    peaks_data = generate_peaks(filepath)
+    if peaks_data:
+        return jsonify(peaks_data)
+    else:
+        return jsonify({"error": "Failed to generate peaks data"}), 500
 
 
 if __name__ == "__main__":

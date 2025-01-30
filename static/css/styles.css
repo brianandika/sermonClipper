@@ -143,7 +143,7 @@ video, audio {
 
 .timestamp-bar {
   width: 100%;
-  height: 20px;
+  height: 80px;
   background-color: var(--border);
   position: relative;
   margin-top: 10px;
