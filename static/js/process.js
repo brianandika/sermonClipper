@@ -1,4 +1,4 @@
-import WaveSurfer from "https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.esm.js";
+import WaveSurfer from "./wavesurfer.esm.js";
 
 const video = document.getElementById("video");
 const timestampIndicator = document.querySelector(".timestamp-indicator");

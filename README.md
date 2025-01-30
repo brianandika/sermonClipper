@@ -49,6 +49,6 @@ This is a Flask web application that allows users to upload a RAW sermon videos 
 - `uploads`: Directory for uploaded files
 - `processed`: Directory for processed files
 
-## Dependecies
+## Dependencies
 - Flask
 - ffmpeg-python
