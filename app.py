@@ -15,6 +15,8 @@ import threading
 import subprocess
 import json
 
+from youtube_upload import upload_video_to_youtube
+
 progress = 0
 progress_message = ""
 processing = False
@@ -378,6 +380,25 @@ def generate_peaks(filepath):
         return None
 
 
+def upload_video_with_progress(video_file, title, description):
+    global progress, progress_message, processing
+    progress = 0
+    progress_message = "Uploading to YouTube..."
+    processing = True
+
+    def progress_callback(progress_value):
+        global progress
+        progress = int(progress_value * 100)
+
+    youtube_video_id = upload_video_to_youtube(
+        video_file, title, description, progress_callback
+    )
+
+    processing = False
+    progress_message = ""
+    return youtube_video_id
+
+
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
@@ -433,11 +454,12 @@ def process_file(filename):
         cross_dissolve_duration = 1  # Duration of the cross dissolve effect in seconds
         fps = 30
 
+        video_filename = f"clipped_{filename}"
+        audio_filename = f"{os.path.splitext(filename)[0]}.mp3"
+
         # get output paths
-        output_video_path = os.path.join(PROCESSED_FOLDER, f"clipped_{filename}")
-        output_audio_path = os.path.join(
-            PROCESSED_FOLDER, f"{os.path.splitext(filename)[0]}.mp3"
-        )
+        output_video_path = os.path.join(PROCESSED_FOLDER, video_filename)
+        output_audio_path = os.path.join(PROCESSED_FOLDER, audio_filename)
 
         # get number of segments
         num_segments = 1
@@ -490,10 +512,21 @@ def process_file(filename):
 
         output_video(media, output_video_path)
 
+        youtube_video_id = None
+        if "upload_to_youtube" in request.form:
+            youtube_title = request.form["youtube_title"]
+            youtube_description = request.form["youtube_description"]
+            youtube_video_id = upload_video_with_progress(
+                output_video_path,
+                youtube_title,
+                youtube_description,
+            )
+
         return render_template(
             "result.html",
-            video_filename=f"clipped_{filename}",
-            audio_filename=f"{os.path.splitext(filename)[0]}.mp3",
+            video_filename=video_filename,
+            audio_filename=audio_filename,
+            youtube_video_id=youtube_video_id,
         )
     return render_template("process.html", filename=filename)
 

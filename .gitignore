@@ -1,6 +1,10 @@
 .DS_Store
+__pycache__/
 source/
 uploads/
 processed/
 temp/
 node_modules/
+secret/*
+!secret/README.txt
+token.json
