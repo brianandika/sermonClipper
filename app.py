@@ -23,11 +23,13 @@ processing = False
 
 def detect_hardware():
     try:
-        # Check for NVIDIA GPU (CUDA)
         result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True)
-        if "cuda" in result.stdout:
-            # return "cuda"
-            return "cpu"  # For now, use CPU as CUDA is not working on some systems
+        # Check for Intel Quick Sync Video (QSV)
+        if "qsv" in result.stdout:
+            return "intel"
+        # # Check for NVIDIA GPU (CUDA)
+        # if "cuda" in result.stdout:
+        #     return "cuda"
         # Check for Apple Silicon (VideoToolbox)
         if "videotoolbox" in result.stdout:
             return "apple"
@@ -168,6 +170,9 @@ def output_video(medium, output):
     elif hardware_accel == "cuda":
         video_codec = "h264_nvenc"
         global_opts = ["-hwaccel", "cuda"]
+    elif hardware_accel == "intel":
+        video_codec = "h264_qsv"
+        global_opts = ["-hwaccel", "qsv"]
 
     video = medium["video"]
     audio = medium["audio"]
