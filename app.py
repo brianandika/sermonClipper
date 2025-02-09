@@ -26,7 +26,8 @@ def detect_hardware():
         # Check for NVIDIA GPU (CUDA)
         result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True)
         if "cuda" in result.stdout:
-            return "cuda"
+            # return "cuda"
+            return "cpu"  # For now, use CPU as CUDA is not working on some systems
         # Check for Apple Silicon (VideoToolbox)
         if "videotoolbox" in result.stdout:
             return "apple"
