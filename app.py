@@ -11,6 +11,7 @@ import ffmpeg
 import os
 import tempfile
 import threading
+import time
 
 import subprocess
 import json
@@ -148,12 +149,10 @@ def output_video(medium, output):
     progress_message = "Processing video..."
     processing = True
 
-    # Create named pipe for progress
-    progress_pipe = os.path.join(
-        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}"
+    # Create temporary file for progress
+    progress_file = os.path.join(
+        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}.txt"
     )
-    if not os.path.exists(progress_pipe):
-        os.mkfifo(progress_pipe)
 
     hardware_accel = detect_hardware()
 
@@ -172,12 +171,11 @@ def output_video(medium, output):
     video = medium["video"]
     audio = medium["audio"]
 
-    # show the command
     try:
         process = (
             ffmpeg.output(video, audio, output, vcodec=video_codec, acodec=audio_codec)
             .global_args(*global_opts)
-            .global_args("-progress", progress_pipe)
+            .global_args("-progress", progress_file)
             .overwrite_output()
         )
 
@@ -185,19 +183,26 @@ def output_video(medium, output):
         thread = threading.Thread(target=process.run)
         thread.start()
 
-        # Read progress from pipe
-        with open(progress_pipe, "r") as pipe:
-            while thread.is_alive():
-                line = pipe.readline()
-                if "out_time_us=" in line:
-                    value = line.split("=")[1].strip()
-                    if value.isdigit():
-                        time_us = int(value)
-                        total_duration = (
-                            medium["duration"] * 1000 * 1000
-                        )  # in microseconds
-                        if total_duration > 0:
-                            progress = min(int((time_us / total_duration) * 100), 100)
+        # Wait for the progress file to be created
+        while not os.path.exists(progress_file):
+            time.sleep(0.1)
+
+        # Read progress from file
+        while thread.is_alive():
+            with open(progress_file, "r") as file:
+                lines = file.readlines()
+                for line in lines:
+                    if "out_time_us=" in line:
+                        value = line.split("=")[1].strip()
+                        if value.isdigit():
+                            time_us = int(value)
+                            total_duration = (
+                                medium["duration"] * 1000 * 1000
+                            )  # in microseconds
+                            if total_duration > 0:
+                                progress = min(
+                                    int((time_us / total_duration) * 100), 100
+                                )
 
         thread.join()
         progress = 100
@@ -206,8 +211,8 @@ def output_video(medium, output):
         processing = False
         progress_message = ""
         # Cleanup
-        if os.path.exists(progress_pipe):
-            os.unlink(progress_pipe)
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
 
 
 def output_audio(medium, output):
@@ -217,18 +222,16 @@ def output_audio(medium, output):
     processing = True
     audio = medium["audio"]
 
-    # Create named pipe for progress
-    progress_pipe = os.path.join(
-        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}"
+    # Create temporary file for progress
+    progress_file = os.path.join(
+        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}.txt"
     )
-    if not os.path.exists(progress_pipe):
-        os.mkfifo(progress_pipe)
 
     try:
-        # Add progress pipe to ffmpeg command
+        # Add progress file to ffmpeg command
         process = (
             ffmpeg.output(audio, output)
-            .global_args("-progress", progress_pipe)
+            .global_args("-progress", progress_file)
             .overwrite_output()
         )
 
@@ -236,19 +239,26 @@ def output_audio(medium, output):
         thread = threading.Thread(target=process.run)
         thread.start()
 
-        # Read progress from pipe
-        with open(progress_pipe, "r") as pipe:
-            while thread.is_alive():
-                line = pipe.readline()
-                if "out_time_us=" in line:
-                    value = line.split("=")[1].strip()
-                    if value.isdigit():
-                        time_us = int(value)
-                        total_duration = (
-                            medium["duration"] * 1000 * 1000
-                        )  # in microseconds
-                        if total_duration > 0:
-                            progress = min(int((time_us / total_duration) * 100), 100)
+        # Wait for the progress file to be created
+        while not os.path.exists(progress_file):
+            time.sleep(0.1)
+
+        # Read progress from file
+        while thread.is_alive():
+            with open(progress_file, "r") as file:
+                lines = file.readlines()
+                for line in lines:
+                    if "out_time_us=" in line:
+                        value = line.split("=")[1].strip()
+                        if value.isdigit():
+                            time_us = int(value)
+                            total_duration = (
+                                medium["duration"] * 1000 * 1000
+                            )  # in microseconds
+                            if total_duration > 0:
+                                progress = min(
+                                    int((time_us / total_duration) * 100), 100
+                                )
 
         thread.join()
         progress = 100
@@ -257,8 +267,8 @@ def output_audio(medium, output):
         processing = False
         progress_message = ""
         # Cleanup
-        if os.path.exists(progress_pipe):
-            os.unlink(progress_pipe)
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
 
 
 def get_video_fps(filepath):
