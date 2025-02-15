@@ -16,7 +16,7 @@ import time
 import subprocess
 import json
 
-from youtube_upload import upload_video_to_youtube
+from youtube_upload import upload_video_to_youtube, sign_in_youtube, sign_out_youtube
 
 progress = 0
 progress_message = ""
@@ -544,7 +544,27 @@ def process_file(filename):
             audio_filename=audio_filename,
             youtube_video_id=youtube_video_id,
         )
-    return render_template("process.html", filename=filename)
+    # Pass youtube_signed_in flag based on token existence
+    youtube_signed_in = os.path.exists("token.json")
+    return render_template(
+        "process.html", filename=filename, youtube_signed_in=youtube_signed_in
+    )
+
+
+@app.route("/youtube/signin")
+def youtube_signin():
+    # Call helper function to force login and save token
+    sign_in_youtube()
+    # Redirect back to the referring page or home
+    next_page = request.args.get("next") or url_for("index")
+    return redirect(next_page)
+
+
+@app.route("/youtube/signout")
+def youtube_signout():
+    sign_out_youtube()
+    next_page = request.args.get("next") or url_for("index")
+    return redirect(next_page)
 
 
 @app.route("/uploads/<filename>")

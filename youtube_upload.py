@@ -33,6 +33,19 @@ def authenticate_youtube():
     return creds
 
 
+def sign_in_youtube():
+    """Force sign in to a Youtube account to save credentials."""
+    return authenticate_youtube()
+
+
+def sign_out_youtube():
+    """Delete stored credentials to sign out from YouTube."""
+    token_file = "token.json"
+    if os.path.exists(token_file):
+        os.remove(token_file)
+    return True
+
+
 def upload_video_to_youtube(video_file, title, description, progress_callback=None):
     creds = authenticate_youtube()
     youtube = build("youtube", "v3", credentials=creds)

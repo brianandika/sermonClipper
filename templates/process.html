@@ -69,27 +69,45 @@
           <input type="file" id="image" name="image" accept="image/*" />
         </div>
 
+        {% if youtube_signed_in %}
+        <fieldset class="youtube-upload-section">
+          <legend>YouTube Upload Options</legend>
+          <div class="flex centered">
+            <label for="youtube_title">YouTube Title:</label>
+            <input type="text" id="youtube_title" name="youtube_title" />
+          </div>
+          <div class="flex centered">
+            <label for="youtube_description">YouTube Description:</label>
+            <textarea
+              id="youtube_description"
+              name="youtube_description"
+            ></textarea>
+          </div>
+          <div class="flex centered">
+            <label for="upload_to_youtube">Upload to YouTube:</label>
+            <input
+              type="checkbox"
+              id="upload_to_youtube"
+              name="upload_to_youtube"
+            />
+          </div>
+          <div class="flex centered">
+            <a
+              href="{{ url_for('youtube_signout', next=request.path) }}"
+              class="btn"
+              >Sign Out of YouTube</a
+            >
+          </div>
+        </fieldset>
+        {% else %}
         <div class="flex centered">
-          <label for="youtube_title">YouTube Title:</label>
-          <input type="text" id="youtube_title" name="youtube_title" />
+          <a
+            href="{{ url_for('youtube_signin', next=request.path) }}"
+            class="btn"
+            >Sign in to YouTube</a
+          >
         </div>
-
-        <div class="flex centered">
-          <label for="youtube_description">YouTube Description:</label>
-          <textarea
-            id="youtube_description"
-            name="youtube_description"
-          ></textarea>
-        </div>
-
-        <div class="flex centered">
-          <label for="upload_to_youtube">Upload to YouTube:</label>
-          <input
-            type="checkbox"
-            id="upload_to_youtube"
-            name="upload_to_youtube"
-          />
-        </div>
+        {% endif %}
 
         <button type="submit" class="btn">Process Video</button>
       </form>
