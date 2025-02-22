@@ -146,17 +146,88 @@ def create_still_image_sequence(image_path, duration):
     return None
 
 
-def output_video(medium, output):
-    global progress, progress_message, processing
-    progress = 0
-    progress_message = "Processing video..."
-    processing = True
+def update_progress(progress_file, duration_estimate):
+    global progress, progress_message
+    progress_message = "Normalizing audio..."
+    while not os.path.exists(progress_file):
+        time.sleep(0.1)
+    while True:
+        try:
+            with open(progress_file, "r") as pf:
+                lines = pf.readlines()
+                for line in lines:
+                    if "out_time_us=" in line:
+                        value = line.split("=")[1].strip()
+                        if value.isdigit():
+                            time_us = int(value)
+                            prog = min(int((time_us / duration_estimate) * 100), 100)
+                            progress = prog
+            time.sleep(0.1)
+        except Exception:
+            pass
+        if progress >= 100:
+            break
 
-    # Create temporary file for progress
-    progress_file = os.path.join(
-        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}.txt"
+
+def normalize_audio(audio, duration_sec):
+    """Apply 2-pass loudnorm filter to normalize audio levels with progress update
+    duration_sec: actual duration in seconds of the audio stream."""
+    global processing, progress_message
+    processing = True
+    progress_message = "Normalizing audio..."
+    temp_file = os.path.join(TEMP_FOLDER, f"temp_audio_{int(time.time())}.wav")
+    # Calculate duration estimate in microseconds (more accurate than a constant)
+    duration_estimate = int(duration_sec * 1e6)
+    norm_progress_file = os.path.join(
+        tempfile.gettempdir(), f"norm_progress_{os.getpid()}.txt"
     )
 
+    try:
+        process = (
+            ffmpeg.output(
+                audio.filter(
+                    "loudnorm", i=-23.0, lra=7.0, tp=-2.0, print_format="json"
+                ),
+                temp_file,
+            )
+            .global_args("-progress", norm_progress_file)
+            .overwrite_output()
+        )
+        progress_thread = threading.Thread(
+            target=update_progress, args=(norm_progress_file, duration_estimate)
+        )
+        progress_thread.start()
+        _, stderr = process.run(capture_stdout=True, capture_stderr=True)
+        progress_thread.join()
+        stderr_str = stderr.decode("utf-8")
+        json_start = stderr_str.find("{")
+        json_str = stderr_str[json_start:]
+        decoder = json.JSONDecoder()
+        stats, _ = decoder.raw_decode(json_str)
+        normalized_audio = audio.filter(
+            "loudnorm",
+            i=-23.0,
+            lra=7.0,
+            tp=-2.0,
+            measured_i=stats["input_i"],
+            measured_lra=stats["input_lra"],
+            measured_tp=stats["input_tp"],
+            measured_thresh=stats["input_thresh"],
+            linear="true",
+            print_format="json",
+        )
+        progress_message = "Audio normalization complete"
+        return normalized_audio
+    finally:
+        progress_message = ""
+        processing = False
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        if os.path.exists(norm_progress_file):
+            os.remove(norm_progress_file)
+
+
+def output_video(medium, output):
     hardware_accel = detect_hardware()
 
     video_codec = "libx264"
@@ -176,6 +247,18 @@ def output_video(medium, output):
 
     video = medium["video"]
     audio = medium["audio"]
+    # Apply audio normalization
+    audio = normalize_audio(audio, medium["duration"])
+
+    global progress, progress_message, processing
+    progress = 0
+    progress_message = "Processing video..."
+    processing = True
+
+    # Create temporary file for progress
+    progress_file = os.path.join(
+        tempfile.gettempdir(), f"ffmpeg_progress_{os.getpid()}.txt"
+    )
 
     try:
         process = (
@@ -222,11 +305,15 @@ def output_video(medium, output):
 
 
 def output_audio(medium, output):
+    audio = medium["audio"]
+
+    # Apply audio normalization
+    audio = normalize_audio(audio, medium["duration"])
+
     global progress, progress_message, processing
     progress = 0
     progress_message = "Processing audio..."
     processing = True
-    audio = medium["audio"]
 
     # Create temporary file for progress
     progress_file = os.path.join(
