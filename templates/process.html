@@ -42,6 +42,19 @@
         enctype="multipart/form-data"
         class="grid"
       >
+        <div class="hardware-selection">
+          <label for="hardware_select">Hardware Acceleration:</label>
+          <select id="hardware_select" name="hardware_choice">
+            <option value="auto">Auto (Detect)</option>
+            <option value="cpu">CPU</option>
+            <option value="intel">Intel Quick Sync (QSV)</option>
+            <option value="cuda">NVIDIA CUDA (NVENC)</option>
+            <option value="apple">Apple VideoToolbox</option>
+            <option value="vaapi">VAAPI</option>
+          </select>
+          <span id="hardware-indicator" aria-live="polite"></span>
+          <small id="hardware-help">Select your encoder; non-available options will be disabled.</small>
+        </div>
         <div class="time-inputs flex">
           <div class="flex">
             <label for="start_time">Start Time (s):</label>

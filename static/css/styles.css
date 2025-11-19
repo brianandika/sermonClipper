@@ -75,6 +75,18 @@ video, audio {
   gap: 1rem;
 }
 
+.hardware-selection {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+#hardware-indicator,
+#hardware-indicator-main {
+  font-size: 0.9rem;
+  color: #374151; /* muted text */
+}
+
 .centered {
   justify-content: center;
 }

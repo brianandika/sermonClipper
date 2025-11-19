@@ -211,6 +211,82 @@ function checkProcessingStatus() {
 // Initial check for processing status
 checkProcessingStatus();
 
+// Fetch hardware info and populate selector
+async function fetchHardware() {
+  try {
+    const resp = await fetch("/get_hardware");
+    const data = await resp.json();
+    const detected = data.detected;
+    const available = (data.available || []).map((a) => a.toLowerCase());
+    const ffmpeg_installed = data.ffmpeg_installed;
+    const hardwareIndicator = document.getElementById("hardware-indicator");
+    const select = document.getElementById("hardware_select");
+
+    // Show detected hardware + ffmpeg state
+    if (!ffmpeg_installed) {
+      hardwareIndicator.innerHTML =
+        '<span style="color:#b91c1c">ffmpeg not found. Install ffmpeg to enable hardware acceleration.</span>';
+      // If ffmpeg is not installed, only CPU should be enabled
+      Array.from(select.options).forEach((opt) => {
+        if (opt.value !== "cpu" && opt.value !== "auto") {
+          opt.disabled = true;
+        } else {
+          opt.disabled = false;
+        }
+      });
+    } else {
+      hardwareIndicator.textContent = "Detected: " + detected;
+      // Disable unsupported options if not available
+      Array.from(select.options).forEach((opt) => {
+        const val = opt.value.toLowerCase();
+        const checkVal = val === "intel" ? "qsv" : val;
+        if (!available.includes(val) && !available.includes(checkVal)) {
+          opt.disabled = true;
+        } else {
+          opt.disabled = false;
+        }
+      });
+    }
+
+    // Disable unsupported options if not available
+    Array.from(select.options).forEach((opt) => {
+      // allow auto and cpu always
+      if (opt.value === "auto" || opt.value === "cpu") {
+        opt.disabled = false;
+        return;
+      }
+      // Map option value to ffmpeg accelerator names
+      const val = opt.value.toLowerCase();
+      const checkVal = val === "intel" ? "qsv" : val;
+      if (!available.includes(val) && !available.includes(checkVal)) {
+        opt.disabled = true;
+      } else {
+        opt.disabled = false;
+      }
+    });
+    // Set the default selection to detected hardware when available
+    // Map ffmpeg report to our select values
+    const mapping = {
+      qsv: "intel",
+      cuda: "cuda",
+      videotoolbox: "apple",
+      vaapi: "vaapi",
+    };
+    const detectedOption = mapping[detected] || detected;
+    // Only set if it's a valid option
+    if (Array.from(select.options).some((o) => o.value === detectedOption)) {
+      select.value = detectedOption;
+    } else {
+      select.value = "auto";
+    }
+  } catch (e) {
+    console.error("Failed to fetch hardware info", e);
+  }
+}
+
+// run at load
+fetchHardware();
+
 const removeIndicatorStart = document.querySelector(".remove-indicator.start");
 const removeIndicatorEnd = document.querySelector(".remove-indicator.end");
 const clipIndicators = document.getElementById("clip-indicators");
