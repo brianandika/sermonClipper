@@ -14,34 +14,86 @@ import threading
 import time
 
 import subprocess
+import shutil
 import json
 
 progress = 0
 progress_message = ""
 processing = False
 
+# Default output resolution used for stills and transitions
+OUTPUT_WIDTH = 1920
+OUTPUT_HEIGHT = 1080
+
 
 def detect_hardware():
     try:
+        # Make sure ffmpeg exists in PATH
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            print("FFmpeg not found in PATH")
+            return "cpu"
         result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True)
-        # Check for Intel Quick Sync Video (QSV)
-        if "qsv" in result.stdout:
+        # Parse available hwaccels
+        hwaccels = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        # Convert to a single string for keyword checks
+        hwstr = " ".join(hwaccels).lower()
+
+        # Priority detection: CUDA (NVIDIA), QSV (Intel), VideoToolbox (Apple)
+        if "cuda" in hwstr:
+            return "cuda"
+        if "qsv" in hwstr:
             return "intel"
-        # # Check for NVIDIA GPU (CUDA)
-        # if "cuda" in result.stdout:
-        #     return "cuda"
-        # Check for Apple Silicon (VideoToolbox)
-        if "videotoolbox" in result.stdout:
+        if "videotoolbox" in hwstr:
             return "apple"
+        if "vaapi" in hwstr:
+            return "vaapi"
     except Exception as e:
         print(f"Error detecting hardware: {e}")
     return "cpu"
+
+
+def list_hardware_options():
+    """Return the list of hwaccels reported by ffmpeg -hwaccels."""
+    try:
+        # Make sure ffmpeg is installed
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            return []
+        result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True)
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        # Filter out header lines like "Hardware acceleration methods:" if present
+        out = [l for l in lines if not l.lower().startswith("hardware")]
+        return out
+    except Exception:
+        return []
 
 
 def get_clip(media_path, start, end, fps=30):
     # it is faster to input the video and then trim it
     media = ffmpeg.input(media_path, ss=start, to=end)
     video_clip = media.video.setpts("PTS-STARTPTS").filter("fps", fps=fps)
+    # Ensure the clip matches the target output resolution by scaling and padding
+    try:
+        # Use scale with keep-aspect-ratio then pad to exact target. This avoids distortion.
+        # Scale to target width (keep aspect ratio) then pad to exact size.
+        # Use positional args for width/height to avoid escaping issues on Windows.
+        video_clip = video_clip.filter(
+            "scale",
+            OUTPUT_WIDTH,
+            -2,
+            force_original_aspect_ratio="decrease",
+        )
+        video_clip = video_clip.filter(
+            "pad",
+            OUTPUT_WIDTH,
+            OUTPUT_HEIGHT,
+            "(ow-iw)/2",
+            "(oh-ih)/2",
+        )
+        print(f"Scaled/padded clip {media_path} to {OUTPUT_WIDTH}x{OUTPUT_HEIGHT}")
+    except Exception as e:
+        print(f"Warning: failed to scale/pad clip {media_path}: {e}")
     audio_clip = media.audio.filter("asetpts", "PTS-STARTPTS")
 
     return {"video": video_clip, "audio": audio_clip, "duration": end - start}
@@ -227,8 +279,10 @@ def normalize_audio(audio, duration_sec):
             os.remove(norm_progress_file)
 
 
-def output_video(medium, output):
-    hardware_accel = detect_hardware()
+def output_video(medium, output, hardware_accel=None):
+    # Use provided hardware or detect if not provided
+    if hardware_accel is None or hardware_accel == "auto":
+        hardware_accel = detect_hardware()
 
     video_codec = "libx264"
     audio_codec = "aac"
@@ -514,8 +568,30 @@ def upload_file():
 def process_file(filename):
     filepath = os.path.join(UPLOAD_FOLDER, filename)
     if request.method == "POST":
-        # Detect hardware
-        hardware_accel = detect_hardware()
+        # Detect hardware (can be overridden by user selection)
+        hardware_choice = request.form.get("hardware_choice") or "auto"
+        if hardware_choice == "auto":
+            hardware_accel = detect_hardware()
+        elif hardware_choice == "cpu":
+            hardware_accel = "cpu"
+        else:
+            # map front-end selectable choices to ffmpeg accel names
+            mapping = {
+                "intel": "qsv",
+                "cuda": "cuda",
+                "apple": "videotoolbox",
+                "vaapi": "vaapi",
+            }
+            requested = hardware_choice
+            mapped = mapping.get(requested)
+
+            # Validate user selection against ffmpeg hwaccels. If ffmpeg is missing or selection not supported, fallback to cpu
+            available_accels = [a.lower() for a in list_hardware_options()]
+            if mapped and mapped in available_accels:
+                hardware_accel = requested
+            else:
+                print(f"Requested hardware '{requested}' not available. Falling back to CPU.")
+                hardware_accel = "cpu"
 
         start_time = float(request.form["start_time"])
         end_time = float(request.form["end_time"])
@@ -591,12 +667,23 @@ def process_file(filename):
 
         media = add_fade_in_out(media, fade_duration=1)
 
-        output_video(media, output_video_path)
+        output_video(media, output_video_path, hardware_accel)
 
+        # Friendly name for the selected hardware
+        friendly_map = {
+            "intel": "Intel Quick Sync (QSV)",
+            "cuda": "NVIDIA CUDA (NVENC)",
+            "apple": "Apple VideoToolbox",
+            "vaapi": "VAAPI",
+            "cpu": "CPU (libx264)",
+        }
+        selected_hardware_friendly = friendly_map.get(hardware_accel, hardware_accel)
         return render_template(
             "result.html",
             video_filename=f"clipped_{filename}",
             audio_filename=f"{os.path.splitext(filename)[0]}.mp3",
+            selected_hardware=hardware_accel,
+            selected_hardware_friendly=selected_hardware_friendly,
         )
     return render_template("process.html", filename=filename)
 
@@ -616,6 +703,32 @@ def status():
     global progress, progress_message, processing
     return jsonify(
         progress=progress, processing=processing, progress_message=progress_message
+    )
+
+
+@app.route("/get_hardware")
+def get_hardware():
+    """Return a JSON blob with detected hardware and available hwaccels."""
+    hw = detect_hardware()
+    options = list_hardware_options()
+    # Map options to friendly names
+    pretty = {
+        "qsv": "Intel Quick Sync (QSV)",
+        "cuda": "NVIDIA CUDA (NVENC)",
+        "videotoolbox": "Apple VideoToolbox",
+        "vaapi": "VAAPI (Linux/Intel/Radeon)",
+    }
+    friendly = [pretty.get(opt.lower(), opt) for opt in options]
+    ffmpeg_installed = True if shutil.which("ffmpeg") else False
+    error_msg = None
+    if not ffmpeg_installed:
+        error_msg = "ffmpeg not found on server PATH. Hardware acceleration not available."
+    return jsonify(
+        detected=hw,
+        available=options,
+        friendly=friendly,
+        ffmpeg_installed=ffmpeg_installed,
+        error=error_msg,
     )
 
 

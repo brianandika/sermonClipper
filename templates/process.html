@@ -69,6 +69,24 @@
           <input type="file" id="image" name="image" accept="image/*" />
         </div>
 
+        <div class="hardware-selection">
+          <label for="hardware_select">Hardware Acceleration</label>
+          <div class="hardware-select-wrap">
+            <select id="hardware_select" name="hardware_choice" aria-describedby="hardware-help">
+              <option value="auto">Auto (Detect)</option>
+              <option value="cpu">CPU</option>
+              <option value="intel">Intel Quick Sync (QSV)</option>
+              <option value="cuda">NVIDIA CUDA (NVENC)</option>
+              <option value="apple">Apple VideoToolbox</option>
+              <option value="vaapi">VAAPI</option>
+            </select>
+            <small id="hardware-help">Choose an encoder. Non-available options will be disabled.</small>
+          </div>
+          <div class="hardware-right">
+            <span id="hardware-indicator" aria-live="polite"></span>
+          </div>
+        </div>
+
         <button type="submit" class="btn">Process Video</button>
       </form>
     </div>
