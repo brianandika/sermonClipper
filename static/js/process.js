@@ -125,6 +125,7 @@ function addClip() {
     <input type="text" name="clip_end[]" placeholder="End Time" />
     <button type="button" class="btn set-clip-end">Set</button>
     <button type="button" class="btn jump-to-clip-end">Jump</button>
+    <button type="button" class="btn remove-clip" aria-label="Remove clip">Remove</button>
   `;
   clipsDiv.appendChild(newClipDiv);
   updateRemoveIndicators();
@@ -150,6 +151,13 @@ function addClip() {
     .addEventListener("click", function () {
       jumpToClipTime(this, "clip_end[]");
     });
+
+  // Add delete/remove event
+  newClipDiv.querySelector(".remove-clip").addEventListener("click", function () {
+    // Remove the clip from DOM and update indicators
+    newClipDiv.remove();
+    updateRemoveIndicators();
+  });
 }
 
 function setClipStart(button) {
@@ -382,3 +390,111 @@ document
   .addEventListener("click", function () {
     jumpToTime("end_time");
   });
+
+// Validate clip inputs on submit: ensure start and end are filled and valid
+document.getElementById("process-form").addEventListener("submit", function (e) {
+  // Remove previous highlights
+  document.querySelectorAll("input.input-error").forEach((el) => {
+    el.classList.remove("input-error");
+  });
+
+  // Validate top-level start/end fields
+  const topStart = document.getElementById("start_time");
+  const topEnd = document.getElementById("end_time");
+  const topStartVal = topStart.value.trim();
+  const topEndVal = topEnd.value.trim();
+  if (!topStartVal || !topEndVal) {
+    const missingMsg = [];
+    if (!topStartVal) {
+      missingMsg.push("Start time is required");
+      topStart.classList.add("input-error");
+    }
+    if (!topEndVal) {
+      missingMsg.push("End time is required");
+      topEnd.classList.add("input-error");
+    }
+    alert(missingMsg.join("\n"));
+    if (!topStartVal) topStart.focus();
+    e.preventDefault();
+    return false;
+  }
+
+  const topStartNum = Number(topStartVal);
+  const topEndNum = Number(topEndVal);
+  if (isNaN(topStartNum) || isNaN(topEndNum)) {
+    const numMsg = [];
+    if (isNaN(topStartNum)) {
+      numMsg.push("Start time must be a valid number");
+      topStart.classList.add("input-error");
+    }
+    if (isNaN(topEndNum)) {
+      numMsg.push("End time must be a valid number");
+      topEnd.classList.add("input-error");
+    }
+    alert(numMsg.join("\n"));
+    if (isNaN(topStartNum)) topStart.focus();
+    e.preventDefault();
+    return false;
+  }
+
+  if (topStartNum >= topEndNum) {
+    alert("Start time must be less than end time.");
+    topStart.classList.add("input-error");
+    topEnd.classList.add("input-error");
+    topStart.focus();
+    e.preventDefault();
+    return false;
+  }
+
+  const clipDivs = document.querySelectorAll("#clips .clip");
+  let hadError = false;
+  let messages = [];
+  let realIndex = 0;
+
+  clipDivs.forEach((clip) => {
+    const startInput = clip.querySelector('input[name="clip_start[]"]');
+    const endInput = clip.querySelector('input[name="clip_end[]"]');
+    // If this .clip container doesn't contain any clip inputs, skip (placeholder)
+    if (!startInput && !endInput) return;
+
+    realIndex += 1;
+
+    const startVal = startInput ? startInput.value.trim() : "";
+    const endVal = endInput ? endInput.value.trim() : "";
+
+    if (!startVal || !endVal) {
+      hadError = true;
+      messages.push(`Clip ${realIndex} must have both start and end times`);
+      if (startInput) startInput.classList.add("input-error");
+      if (endInput) endInput.classList.add("input-error");
+      return;
+    }
+
+    // Optional: validate numeric
+    const startNum = Number(startVal);
+    const endNum = Number(endVal);
+    if (isNaN(startNum) || isNaN(endNum)) {
+      hadError = true;
+      messages.push(`Clip ${realIndex} has invalid number format`);
+      if (startInput && isNaN(startNum)) startInput.classList.add("input-error");
+      if (endInput && isNaN(endNum)) endInput.classList.add("input-error");
+      return;
+    }
+
+    if (startNum >= endNum) {
+      hadError = true;
+      messages.push(`Clip ${realIndex} start time must be less than end time`);
+      startInput.classList.add("input-error");
+      endInput.classList.add("input-error");
+    }
+  });
+
+  if (hadError) {
+    alert(messages.join("\n"));
+    // Focus first error
+    const firstErr = document.querySelector("input.input-error");
+    if (firstErr) firstErr.focus();
+    e.preventDefault();
+    return false;
+  }
+});

@@ -49,6 +49,14 @@ body {
   background: var(--primary-hover);
 }
 
+.btn.remove-clip {
+  background: #ef4444;
+}
+
+.btn.remove-clip:hover {
+  background: #dc2626;
+}
+
 input[type="file"],
 input[type="text"] {
   border: 1px solid var(--border);
@@ -131,6 +139,12 @@ video, audio {
 .hardware-selection small#hardware-help{
   color: #6b7280;
   margin-top: 0.25rem;
+}
+
+/* Highlight validation errors */
+.input-error {
+  border: 2px solid #ef4444 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.06);
 }
 
 .centered {
