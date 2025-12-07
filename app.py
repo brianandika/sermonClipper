@@ -16,6 +16,7 @@ import time
 import subprocess
 import shutil
 import json
+from pathlib import Path
 
 progress = 0
 progress_message = ""
@@ -24,6 +25,11 @@ processing = False
 # Default output resolution used for stills and transitions
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
+
+# Cache cleanup configuration
+UPLOADS_MAX_AGE_HOURS = 168  # Delete files older than 1 week (set to None to disable)
+TEMP_MAX_AGE_HOURS = 24  # Delete temp files older than 24 hours (set to None to disable)
+CLEANUP_INTERVAL_HOURS = 24  # Run cleanup every 1 day
 
 
 def detect_hardware():
@@ -545,6 +551,64 @@ os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 
 
+def cleanup_old_files():
+    """Delete old files from uploads and temp directories based on age."""
+    current_time = time.time()
+    
+    # Cleanup uploads folder
+    if UPLOADS_MAX_AGE_HOURS is not None:
+        max_age_seconds = UPLOADS_MAX_AGE_HOURS * 3600
+        deleted_count = 0
+        try:
+            for file_path in Path(UPLOAD_FOLDER).iterdir():
+                if file_path.is_file():
+                    file_age = current_time - file_path.stat().st_mtime
+                    if file_age > max_age_seconds:
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                            print(f"Deleted old upload: {file_path.name}")
+                        except Exception as e:
+                            print(f"Error deleting {file_path.name}: {e}")
+            if deleted_count > 0:
+                print(f"Cleanup: Deleted {deleted_count} file(s) from uploads folder")
+        except Exception as e:
+            print(f"Error during uploads cleanup: {e}")
+    
+    # Cleanup temp folder (excluding .peaks.json cache files)
+    if TEMP_MAX_AGE_HOURS is not None:
+        max_age_seconds = TEMP_MAX_AGE_HOURS * 3600
+        deleted_count = 0
+        try:
+            for file_path in Path(TEMP_FOLDER).iterdir():
+                if file_path.is_file():
+                    if file_path.suffix == ".json" and ".peaks.json" in file_path.name:
+                        continue
+                    file_age = current_time - file_path.stat().st_mtime
+                    if file_age > max_age_seconds:
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                            print(f"Deleted old temp file: {file_path.name}")
+                        except Exception as e:
+                            print(f"Error deleting {file_path.name}: {e}")
+            if deleted_count > 0:
+                print(f"Cleanup: Deleted {deleted_count} file(s) from temp folder")
+        except Exception as e:
+            print(f"Error during temp cleanup: {e}")
+
+
+def cleanup_worker():
+    """Background thread that periodically runs cleanup."""
+    while True:
+        try:
+            cleanup_old_files()
+        except Exception as e:
+            print(f"Error in cleanup worker: {e}")
+        # Sleep for the cleanup interval
+        time.sleep(CLEANUP_INTERVAL_HOURS * 3600)
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -750,4 +814,12 @@ def get_peaks(filename):
 
 
 if __name__ == "__main__":
+    # Start cleanup thread
+    cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+    cleanup_thread.start()
+    print(f"Cache cleanup started (uploads: {UPLOADS_MAX_AGE_HOURS}h, temp: {TEMP_MAX_AGE_HOURS}h, interval: {CLEANUP_INTERVAL_HOURS}h)")
+    
+    # Run initial cleanup
+    cleanup_old_files()
+    
     app.run(debug=True)
