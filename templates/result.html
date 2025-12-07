@@ -54,7 +54,10 @@
           <span id="used-hardware">{{ selected_hardware_friendly }}</span>
         </div>
 
-        <a href="{{ url_for('index') }}" class="btn">Upload Another File</a>
+        <div class="flex centered">
+          <a href="{{ url_for('index') }}" class="btn">Upload Another File</a>
+          <a href="{{ url_for('youtube', video=video_filename) }}" class="btn">Upload to YouTube</a>
+        </div>
       </div>
     </div>
   </body>

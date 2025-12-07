@@ -4,3 +4,4 @@ uploads/
 processed/
 temp/
 node_modules/
+.env

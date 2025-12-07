@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upload to YouTube</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/styles.css') }}"
+    />
+    <style>
+      body {
+        padding-top: 40px;
+      }
+
+      .youtube-container {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+
+      .auth-section,
+      .upload-section {
+        background: #f5f5f5;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+      }
+
+      .auth-status {
+        padding: 15px;  
+        border-radius: 4px;
+        margin-bottom: 15px;
+        font-weight: 500;
+      }
+
+      .auth-status.authenticated {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .auth-status.not-authenticated {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .form-group {
+        margin-bottom: 15px;
+      }
+
+      .form-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 500;
+      }
+
+      .form-group input,
+      .form-group textarea,
+      .form-group select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+        font-family: inherit;
+        box-sizing: border-box;
+      }
+
+      .form-group textarea {
+        resize: vertical;
+        min-height: 100px;
+      }
+
+      .visibility-options {
+        display: flex;
+        gap: 15px;
+        margin-top: 10px;
+      }
+
+      .visibility-options label {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0;
+      }
+
+      .visibility-options input[type="radio"] {
+        width: auto;
+        margin-right: 5px;
+      }
+
+      .btn-group {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: background-color 0.3s;
+      }
+
+      .btn-primary {
+        background-color: #007bff;
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background-color: #0056b3;
+      }
+
+      .btn-primary:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+
+      .btn-secondary {
+        background-color: #6c757d;
+        color: white;
+      }
+
+      .btn-secondary:hover {
+        background-color: #545b62;
+      }
+
+      .btn-danger {
+        background-color: #dc3545;
+        color: white;
+      }
+
+      .btn-danger:hover {
+        background-color: #c82333;
+      }
+
+      .progress-container {
+        display: none;
+        margin-top: 20px;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 30px;
+        background-color: #e9ecef;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background-color: #28a745;
+        width: 0%;
+        transition: width 0.3s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 500;
+        font-size: 12px;
+      }
+
+      .message {
+        padding: 12px;
+        border-radius: 4px;
+        margin-top: 15px;
+        display: none;
+      }
+
+      .message.success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+        display: block;
+      }
+
+      .message.error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+        display: block;
+      }
+
+      .message.info {
+        background-color: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+        display: block;
+      }
+
+      .file-info {
+        background: #e7f3ff;
+        padding: 15px;
+        border-radius: 4px;
+        border-left: 4px solid #2196F3;
+        margin-bottom: 20px;
+      }
+
+      .file-info strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .back-link {
+        display: inline-block;
+        margin-bottom: 20px;
+      }
+
+      .back-link a {
+        color: #007bff;
+        text-decoration: none;
+      }
+
+      .back-link a:hover {
+        text-decoration: underline;
+      }
+
+      .auth-widget {
+        position: fixed;
+        top: 40px;
+        right: 20px;
+        background: #f5f5f5;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+        min-width: 200px;
+        display: none;
+      }
+
+      .auth-widget.visible {
+        display: block;
+      }
+
+      .auth-widget-content {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: flex-start;
+      }
+
+      .auth-widget-status {
+        font-size: 14px;
+        font-weight: 500;
+        padding: 8px 12px;
+        border-radius: 4px;
+        margin: 0;
+      }
+
+      .auth-widget-status.authenticated {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .auth-widget-status.not-authenticated {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .auth-widget .btn {
+        width: 100%;
+        padding: 8px 16px;
+        font-size: 13px;
+      }
+
+      .auth-section.authenticated-hidden {
+        display: none;
+      }
+
+      .playlist-checkbox-container {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: white;
+        min-height: 150px;
+        max-height: 200px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+
+      .playlist-checkbox-container .playlist-loading {
+        color: #666;
+        font-style: italic;
+      }
+
+      .playlist-checkbox-container .playlist-item {
+        display: flex;
+        align-items: center;
+        padding: 8px 0;
+        cursor: pointer;
+      }
+
+      .playlist-checkbox-container .playlist-item input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        margin-right: 10px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+
+      .playlist-checkbox-container .playlist-item label {
+        margin: 0;
+        cursor: pointer;
+        font-weight: normal;
+        flex: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Authentication Widget (Top Right) -->
+    <div id="auth-widget" class="auth-widget">
+      <div class="auth-widget-content">
+        <div id="auth-widget-status" class="auth-widget-status not-authenticated">
+          ❌ Not Authenticated
+        </div>
+        <button id="auth-widget-logout" class="btn btn-secondary" style="display: none;">
+          Logout
+        </button>
+      </div>
+    </div>
+
+    <div class="youtube-container">
+      <div class="back-link">
+        <a href="{{ url_for('index') }}">← Back to Home</a>
+      </div>
+
+      <h1>Upload to YouTube</h1>
+
+      <!-- File Info Section -->
+      {% if video_filename %}
+      <div class="file-info">
+        <strong>📹 Video File:</strong>
+        {{ video_filename }}
+      </div>
+      {% endif %}
+
+      <!-- Manual Video Upload Section -->
+      <div id="manual-video-section" class="auth-section" style="background: #fff3cd; border: 1px solid #ffc107; display: none;">
+        <h2>Manual Video Upload</h2>
+        <p style="margin-bottom: 15px;">Select a video file to upload manually (bypasses video processing):</p>
+        <input type="file" id="manual-video-input" accept="video/*" style="display: none;" />
+        <button id="manual-video-button" class="btn btn-secondary" style="background-color: #ffc107; color: #000;">
+          Select Manual Video
+        </button>
+        <div id="manual-video-info" style="margin-top: 10px; display: none;">
+          <strong>Manual Video:</strong> <span id="manual-video-name"></span>
+        </div>
+      </div>
+
+      <!-- Authentication Section -->
+      <div class="auth-section" id="auth-section">
+        <h2>Authentication</h2>
+        <div id="auth-status" class="auth-status not-authenticated">
+          ❌ Not Authenticated
+        </div>
+        <p>
+          To upload videos to YouTube, you need to authenticate with your Google
+          account.
+        </p>
+        <button id="auth-button" class="btn btn-primary">
+          Authenticate with Google
+        </button>
+        <button
+          id="logout-button"
+          class="btn btn-secondary"
+          style="display: none"
+        >
+          Logout
+        </button>
+      </div>
+
+      <!-- Upload Section -->
+      <div class="upload-section" id="upload-section" style="display: none">
+        <h2>Upload Details</h2>
+        <form id="youtube-upload-form">
+          <div class="form-group">
+            <label for="title">Video Title *</label>
+            <input
+              type="text"
+              id="title"
+              name="title"
+              required
+              placeholder="Enter video title"
+              maxlength="100"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="description">Description *</label>
+            <textarea
+              id="description"
+              name="description"
+              required
+              placeholder="Enter video description"
+              maxlength="5000"
+            ></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Visibility *</label>
+            <div class="visibility-options">
+              <label>
+                <input type="radio" name="visibility" value="public" checked />
+                Public
+              </label>
+              <label>
+                <input type="radio" name="visibility" value="unlisted" />
+                Unlisted
+              </label>
+              <label>
+                <input type="radio" name="visibility" value="private" />
+                Private
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Add to Playlist(s) *</label>
+            <div id="playlist-container" class="playlist-checkbox-container">
+              <div class="playlist-loading">Loading playlists...</div>
+            </div>
+            <button type="button" id="refresh-playlists" class="btn btn-secondary" style="margin-top: 10px;">
+              Refresh Playlists
+            </button>
+            <div id="playlist-error" style="color: #dc3545; font-size: 14px; margin-top: 5px; display: none;">
+              Please select at least one playlist.
+            </div>
+          </div>
+
+          <div class="btn-group">
+            <button type="submit" class="btn btn-primary" id="submit-button">
+              Upload Video
+            </button>
+            <button type="reset" class="btn btn-secondary">Clear Form</button>
+          </div>
+        </form>
+
+        <!-- Progress Section -->
+        <div class="progress-container" id="progress-container">
+          <h3>Upload Progress</h3>
+          <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill">0%</div>
+          </div>
+          <div id="progress-message" style="margin-top: 10px; text-align: center">
+            Preparing upload...
+          </div>
+        </div>
+
+        <!-- Message Section -->
+        <div id="message" class="message"></div>
+      </div>
+    </div>
+
+    <!-- YouTube JS Manager -->
+    <script src="{{ url_for('static', filename='js/youtube.js') }}"></script>
+  </body>
+</html>
