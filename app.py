@@ -6,6 +6,7 @@ from flask import (
     url_for,
     send_from_directory,
     jsonify,
+    session
 )
 import ffmpeg
 import os
@@ -16,6 +17,15 @@ import time
 import subprocess
 import shutil
 import json
+from pathlib import Path
+from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google_auth_oauthlib.flow import Flow
+
+# Load environment variables from .env file
+load_dotenv()
 
 progress = 0
 progress_message = ""
@@ -24,6 +34,11 @@ processing = False
 # Default output resolution used for stills and transitions
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
+
+# Cache cleanup configuration
+UPLOADS_MAX_AGE_HOURS = 168  # Delete files older than 1 week (set to None to disable)
+TEMP_MAX_AGE_HOURS = 24  # Delete temp files older than 24 hours (set to None to disable)
+CLEANUP_INTERVAL_HOURS = 24  # Run cleanup every 1 day
 
 
 def detect_hardware():
@@ -536,6 +551,7 @@ def generate_peaks(filepath):
 
 
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 
 UPLOAD_FOLDER = "uploads"
 PROCESSED_FOLDER = "processed"
@@ -543,6 +559,64 @@ TEMP_FOLDER = "temp"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
+
+
+def cleanup_old_files():
+    """Delete old files from uploads and temp directories based on age."""
+    current_time = time.time()
+    
+    # Cleanup uploads folder
+    if UPLOADS_MAX_AGE_HOURS is not None:
+        max_age_seconds = UPLOADS_MAX_AGE_HOURS * 3600
+        deleted_count = 0
+        try:
+            for file_path in Path(UPLOAD_FOLDER).iterdir():
+                if file_path.is_file():
+                    file_age = current_time - file_path.stat().st_mtime
+                    if file_age > max_age_seconds:
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                            print(f"Deleted old upload: {file_path.name}")
+                        except Exception as e:
+                            print(f"Error deleting {file_path.name}: {e}")
+            if deleted_count > 0:
+                print(f"Cleanup: Deleted {deleted_count} file(s) from uploads folder")
+        except Exception as e:
+            print(f"Error during uploads cleanup: {e}")
+    
+    # Cleanup temp folder (excluding .peaks.json cache files)
+    if TEMP_MAX_AGE_HOURS is not None:
+        max_age_seconds = TEMP_MAX_AGE_HOURS * 3600
+        deleted_count = 0
+        try:
+            for file_path in Path(TEMP_FOLDER).iterdir():
+                if file_path.is_file():
+                    if file_path.suffix == ".json" and ".peaks.json" in file_path.name:
+                        continue
+                    file_age = current_time - file_path.stat().st_mtime
+                    if file_age > max_age_seconds:
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                            print(f"Deleted old temp file: {file_path.name}")
+                        except Exception as e:
+                            print(f"Error deleting {file_path.name}: {e}")
+            if deleted_count > 0:
+                print(f"Cleanup: Deleted {deleted_count} file(s) from temp folder")
+        except Exception as e:
+            print(f"Error during temp cleanup: {e}")
+
+
+def cleanup_worker():
+    """Background thread that periodically runs cleanup."""
+    while True:
+        try:
+            cleanup_old_files()
+        except Exception as e:
+            print(f"Error in cleanup worker: {e}")
+        # Sleep for the cleanup interval
+        time.sleep(CLEANUP_INTERVAL_HOURS * 3600)
 
 
 @app.route("/")
@@ -749,5 +823,317 @@ def get_peaks(filename):
         return jsonify({"error": "Failed to generate peaks data"}), 500
 
 
+@app.route("/youtube")
+def youtube():
+    """YouTube upload page"""
+    # Check if coming from result page with video filename
+    video_filename = request.args.get("video")
+    return render_template("youtube.html", video_filename=video_filename)
+
+
+@app.route("/youtube/auth")
+def youtube_auth():
+    """Initiate YouTube authentication flow"""
+    try:        
+        # Get your OAuth credentials from environment or config
+        client_config = {
+            "installed": {
+                "client_id": os.getenv("GOOGLE_CLIENT_ID", "YOUR_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", "YOUR_CLIENT_SECRET"),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost:5000/youtube/callback"]
+            }
+        }
+        
+        # Scopes required for YouTube upload and playlist management
+        scopes = [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.force-ssl"
+        ]
+        
+        flow = Flow.from_client_config(client_config, scopes=scopes)
+        flow.redirect_uri = url_for("youtube_callback", _external=True)
+        
+        # Store flow in session for later use
+        authorization_url, state = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true"
+        )
+        
+        return redirect(authorization_url)
+        
+    except Exception as e:
+        print(f"Auth error: {str(e)}")
+        return redirect(url_for("youtube", error="Authentication setup required"))
+
+
+@app.route("/youtube/callback")
+def youtube_callback():
+    """Handle YouTube OAuth callback"""
+    try:        
+        code = request.args.get("code")
+        state = request.args.get("state")
+        
+        if not code:
+            return redirect(url_for("youtube", error="Authorization denied"))
+        
+        client_config = {
+            "installed": {
+                "client_id": os.getenv("GOOGLE_CLIENT_ID", "YOUR_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", "YOUR_CLIENT_SECRET"),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost:5000/youtube/callback"]
+            }
+        }
+        
+        scopes = [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.force-ssl"
+        ]
+        flow = Flow.from_client_config(client_config, scopes=scopes)
+        flow.redirect_uri = url_for("youtube_callback", _external=True)
+        
+        # Exchange code for credentials
+        credentials = flow.fetch_token(code=code)
+        
+        # Store credentials in session (use server-side session for security)
+        session["youtube_credentials"] = {
+            "access_token": credentials.get("access_token"),
+            "refresh_token": credentials.get("refresh_token"),
+            "expires_at": credentials.get("expires_at")
+        }
+        
+        return redirect(url_for("youtube"))
+        
+    except Exception as e:
+        print(f"Callback error: {str(e)}")
+        return redirect(url_for("youtube", error=str(e)))
+
+
+@app.route("/youtube/auth-status")
+def youtube_auth_status():
+    """Check if user is authenticated"""
+    
+    credentials = session.get("youtube_credentials")
+    if credentials and credentials.get("access_token"):
+        return jsonify({
+            "authenticated": True,
+            "access_token": credentials.get("access_token")
+        })
+    else:
+        return jsonify({"authenticated": False})
+
+
+@app.route("/youtube/logout", methods=["POST"])
+def youtube_logout():
+    """Logout from YouTube and revoke OAuth token"""    
+    try:
+        # Get credentials before removing from session
+        credentials = session.get("youtube_credentials")
+        
+        # Revoke the OAuth token with Google if we have one
+        if credentials and credentials.get("access_token"):
+            try:
+                import urllib.request
+                import urllib.parse
+                access_token = credentials.get("access_token")
+                # Revoke the token with Google
+                revoke_url = "https://oauth2.googleapis.com/revoke"
+                data = urllib.parse.urlencode({"token": access_token}).encode()
+                req = urllib.request.Request(revoke_url, data=data)
+                urllib.request.urlopen(req, timeout=5)
+            except Exception as e:
+                # Log error but continue with logout even if revocation fails
+                print(f"Token revocation error (non-critical): {str(e)}")
+        
+        # Remove credentials from session
+        session.pop("youtube_credentials", None)
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"Logout error: {str(e)}")
+        # Still clear session even if revocation fails
+        session.pop("youtube_credentials", None)
+        return jsonify({"success": True})
+
+
+@app.route("/youtube/upload-manual-video", methods=["POST"])
+def youtube_upload_manual_video():
+    """Upload a manual video file for YouTube upload"""
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+        
+        if file:
+            # Save to processed folder for YouTube upload
+            filename = file.filename
+            filepath = os.path.join(PROCESSED_FOLDER, filename)
+            file.save(filepath)
+            return jsonify({
+                "success": True,
+                "filename": filename,
+                "message": "Test video uploaded successfully"
+            })
+        
+        return jsonify({"error": "File upload failed"}), 400
+        
+    except Exception as e:
+        print(f"Test video upload error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/youtube/playlists", methods=["GET"])
+def youtube_playlists():
+    """Fetch user's YouTube playlists"""    
+    try:
+        credentials = session.get("youtube_credentials")
+        if not credentials or not credentials.get("access_token"):
+            return jsonify({"error": "Not authenticated"}), 401
+        
+        access_token = credentials.get("access_token")
+        
+        
+        creds = Credentials(token=access_token)
+        youtube = build('youtube', 'v3', credentials=creds)
+        
+        playlists = []
+        next_page_token = None
+        
+        while True:
+            request = youtube.playlists().list(
+                part="snippet,contentDetails",
+                mine=True,
+                maxResults=50,
+                pageToken=next_page_token
+            )
+            response = request.execute()
+            
+            for item in response.get("items", []):
+                playlists.append({
+                    "id": item["id"],
+                    "title": item["snippet"]["title"],
+                    "itemCount": item["contentDetails"]["itemCount"]
+                })
+            
+            next_page_token = response.get("nextPageToken")
+            if not next_page_token:
+                break
+        
+        return jsonify({"playlists": playlists})
+        
+    except Exception as e:
+        print(f"Playlist fetch error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/youtube/upload", methods=["POST"])
+def youtube_upload():
+    """Handle YouTube upload request"""    
+    try:
+        data = request.get_json()
+        
+        # Extract form data
+        filename = data.get("filename")
+        title = data.get("title")
+        description = data.get("description", "")
+        visibility = data.get("visibility", "private")
+        playlist_ids = data.get("playlist_ids", [])
+        
+        # Validate required fields
+        if not filename or not title:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        if not description or description.strip() == "":
+            return jsonify({"error": "Description is required"}), 400
+        
+        if not playlist_ids or len(playlist_ids) == 0:
+            return jsonify({"error": "At least one playlist selection is required"}), 400
+        
+        # Check authentication
+        credentials = session.get("youtube_credentials")
+        if not credentials or not credentials.get("access_token"):
+            return jsonify({"error": "Not authenticated"}), 401
+        
+        # Get the video file path
+        video_path = os.path.join(PROCESSED_FOLDER, filename)
+        if not os.path.exists(video_path):
+            return jsonify({"error": "Video file not found"}), 404
+        
+        access_token = credentials.get("access_token")
+        
+        creds = Credentials(token=access_token)
+        youtube = build('youtube', 'v3', credentials=creds)
+        
+        upload_request = youtube.videos().insert(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": title,
+                    "description": description,
+                    "categoryId": "26"  # Educational
+                },
+                "status": {
+                    "privacyStatus": visibility,
+                    "selfDeclaredMadeForKids": False
+                }
+            },
+            media_body=MediaFileUpload(
+                video_path,
+                mimetype='video/mp4',
+                chunksize=10*1024*1024,  # 10MB chunks for better performance
+                resumable=True
+            )
+        )
+        
+        response = upload_request.execute()
+        video_id = response.get("id")
+        
+        # Add video to all selected playlists
+        added_playlists = []
+        for playlist_id in playlist_ids:
+            try:
+                youtube.playlistItems().insert(
+                    part="snippet",
+                    body={
+                        "snippet": {
+                            "playlistId": playlist_id,
+                            "resourceId": {
+                                "kind": "youtube#video",
+                                "videoId": video_id
+                            }
+                        }
+                    }
+                ).execute()
+                added_playlists.append(playlist_id)
+            except Exception as e:
+                print(f"Error adding video to playlist {playlist_id}: {str(e)}")
+                # Continue with other playlists even if one fails
+        
+        return jsonify({
+            "success": True,
+            "video_id": video_id,
+            "added_to_playlists": len(added_playlists) > 0,
+            "playlists_added": len(added_playlists),
+            "total_playlists": len(playlist_ids)
+        })
+        
+    except Exception as e:
+        print(f"YouTube upload error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
+    # Start cleanup thread
+    cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+    cleanup_thread.start()
+    print(f"Cache cleanup started (uploads: {UPLOADS_MAX_AGE_HOURS}h, temp: {TEMP_MAX_AGE_HOURS}h, interval: {CLEANUP_INTERVAL_HOURS}h)")
+    
+    # Run initial cleanup
+    cleanup_old_files()
+    
     app.run(debug=True)
