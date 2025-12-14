@@ -36,7 +36,7 @@ OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
 
 # Cache cleanup configuration
-UPLOADS_MAX_AGE_HOURS = 168  # Delete files older than 1 week (set to None to disable)
+UPLOADS_MAX_AGE_HOURS = 2190  # Delete files older than 3 months (set to None to disable)
 TEMP_MAX_AGE_HOURS = 24  # Delete temp files older than 24 hours (set to None to disable)
 CLEANUP_INTERVAL_HOURS = 24  # Run cleanup every 1 day
 
