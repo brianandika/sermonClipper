@@ -57,8 +57,10 @@ class YouTubeUploadManager {
     const fileInfo = document.querySelector(".file-info");
     if (fileInfo) {
       const text = fileInfo.textContent;
-      const match = text.match(/([^\s]+\.(mp4|mov|avi|mkv))/i);
-      return match ? match[1] : null;
+      // Match filename with spaces - captures everything after "📹 Video File:" until end of line/string
+      // This handles filenames with spaces like "clipped_P. Young Video for Retreat.MOV"
+      const match = text.match(/📹\s*Video File:\s*(.+\.(?:mp4|mov|avi|mkv))/i);
+      return match ? match[1].trim() : null;
     }
     return null;
   }
