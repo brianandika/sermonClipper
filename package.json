@@ -1,0 +1,30 @@
+{
+    "name": "sermon-clipper",
+    "private": true,
+    "version": "0.1.0",
+    "workspaces": [
+        "apps/*",
+        "packages/*"
+    ],
+    "scripts": {
+        "build": "npm run build:shared && npm run build:api && npm run build:worker",
+        "build:shared": "npm run build --workspace @sermon-clipper/shared",
+        "build:api": "npm run build --workspace @sermon-clipper/api",
+        "build:worker": "npm run build --workspace @sermon-clipper/worker",
+        "dev:api": "npm run start:dev --workspace @sermon-clipper/api",
+        "dev:worker": "npm run start:dev --workspace @sermon-clipper/worker",
+        "dev:web": "npm run dev --workspace @sermon-clipper/web",
+        "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+        "prisma:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
+        "lint": "npm run lint --workspaces --if-present"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.2",
+        "prisma": "^6.6.0",
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.2"
+    },
+    "dependencies": {
+        "dotenv": "^17.4.1"
+    }
+}

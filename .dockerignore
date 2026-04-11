@@ -1,0 +1,13 @@
+.devcontainer
+.git
+.gitignore
+node_modules
+venv
+dist
+work
+uploads
+processed
+temp
+*.log
+*.tsbuildinfo
+.env

@@ -1,0 +1,2 @@
+export const REDIS_CONNECTION = Symbol("REDIS_CONNECTION");
+export const CLIP_PROCESS_QUEUE = Symbol("CLIP_PROCESS_QUEUE");

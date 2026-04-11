@@ -5,3 +5,7 @@ processed/
 temp/
 node_modules/
 .env
+dist/
+work/
+*.log
+*.tsbuildinfo

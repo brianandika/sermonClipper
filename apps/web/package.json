@@ -1,0 +1,10 @@
+{
+    "name": "@sermon-clipper/web",
+    "version": "0.1.0",
+    "private": true,
+    "scripts": {
+        "dev": "echo \"Frontend scaffold pending\"",
+        "build": "echo \"Frontend scaffold pending\"",
+        "lint": "echo \"Frontend scaffold pending\""
+    }
+}

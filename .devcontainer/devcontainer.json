@@ -1,31 +1,62 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the
-// README at: https://github.com/devcontainers/templates/tree/main/src/debian
 {
-	"name": "Debian",
-	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-	"image": "mcr.microsoft.com/devcontainers/base:trixie",
-	// Remove or uncomment the following `runArgs` to enable GPU support on hosts
-	// that have NVIDIA drivers and the NVIDIA Container Toolkit installed.
-	"runArgs": [
-		"--gpus",
-		"all"
+	"name": "sermon-clipper-dev",
+	"dockerComposeFile": [
+		"../docker-compose.yml",
+		"docker-compose.yml"
 	],
+	"service": "workspace",
+	"workspaceFolder": "/workspaces/sermonClipper",
+	"shutdownAction": "stopCompose",
+	"runServices": [
+		"workspace",
+		"postgres",
+		"redis"
+	],
+	"features": {
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "22"
+		},
+		"ghcr.io/devcontainers/features/python:1": {
+			"version": "3.12"
+		},
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"moby": false
+		}
+	},
 	"containerEnv": {
 		"NVIDIA_DRIVER_CAPABILITIES": "all"
 	},
-	"features": {
-		"ghcr.io/devcontainers/features/node:1": {},
-		"ghcr.io/devcontainers/features/python:1": {},
-		"ghcr.io/devcontainers-extra/features/ffmpeg-apt-get:1": {}
+	"forwardPorts": [
+		3000,
+		5000,
+		5432,
+		6379
+	],
+	"portsAttributes": {
+		"3000": {
+			"label": "Nest API"
+		},
+		"5000": {
+			"label": "Legacy Flask App"
+		},
+		"5432": {
+			"label": "PostgreSQL"
+		},
+		"6379": {
+			"label": "Redis"
+		}
 	},
-	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
-	// Configure tool-specific properties.
-	// "customizations": {},
-	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
-	// "remoteUser": "root"
-	// Run a lightweight check after the container is created to show GPU info if available.
-	"postCreateCommand": "bash -lc 'if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi; else echo \"nvidia-smi not found inside container. Ensure host has NVIDIA drivers and the NVIDIA Container Toolkit installed.\"; fi'"
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-azuretools.vscode-docker",
+				"esbenp.prettier-vscode",
+				"dbaeumer.vscode-eslint",
+				"prisma.prisma"
+			]
+		}
+	},
+	"postCreateCommand": "bash .devcontainer/post-create.sh"
 }

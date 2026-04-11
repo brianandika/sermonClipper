@@ -1,0 +1,49 @@
+import { Injectable, NotFoundException } from "@nestjs/common";
+import type { ResultResponse } from "@sermon-clipper/shared";
+import { PrismaService } from "../prisma/prisma.service";
+
+@Injectable()
+export class ResultsService {
+    constructor(private readonly prisma: PrismaService) { }
+
+    async getOwnedResultByJobId(sessionId: string, jobId: string) {
+        const result = await this.prisma.result.findFirst({
+            where: {
+                sessionId,
+                jobId,
+            },
+        });
+
+        if (!result) {
+            throw new NotFoundException("Result not found");
+        }
+
+        return result;
+    }
+
+    toResponse(result: {
+        id: string;
+        jobId: string;
+        sessionId: string;
+        videoPath: string;
+        audioPath: string;
+        manifestPath: string;
+        sizeBytes: bigint | null;
+        duration: number | null;
+        expiresAt: Date;
+        createdAt: Date;
+    }): ResultResponse {
+        return {
+            resultId: result.id,
+            jobId: result.jobId,
+            sessionId: result.sessionId,
+            videoPath: result.videoPath,
+            audioPath: result.audioPath,
+            manifestPath: result.manifestPath,
+            sizeBytes: result.sizeBytes?.toString() ?? null,
+            duration: result.duration,
+            expiresAt: result.expiresAt.toISOString(),
+            createdAt: result.createdAt.toISOString(),
+        };
+    }
+}

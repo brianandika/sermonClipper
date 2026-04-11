@@ -1,0 +1,26 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "commonjs",
+        "moduleResolution": "node",
+        "types": [
+            "node"
+        ],
+        "ignoreDeprecations": "5.0",
+        "strict": true,
+        "esModuleInterop": true,
+        "experimentalDecorators": true,
+        "emitDecoratorMetadata": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "baseUrl": ".",
+        "paths": {
+            "@sermon-clipper/shared": [
+                "packages/shared/src"
+            ],
+            "@sermon-clipper/shared/*": [
+                "packages/shared/src/*"
+            ]
+        }
+    }
+}
