@@ -1,6 +1,7 @@
-import { Injectable, InternalServerErrorException } from "@nestjs/common";
-import { rm, writeFile } from "node:fs/promises";
+import { Injectable, InternalServerErrorException, Logger } from "@nestjs/common";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import type { Asset } from "@prisma/client";
@@ -20,6 +21,16 @@ interface FfprobeStreamsResponse {
 
 @Injectable()
 export class AssetMediaService {
+    private readonly logger = new Logger(AssetMediaService.name);
+    private buildFallbackPeaksPayload() {
+        return {
+            data: new Array<number>(1000).fill(0),
+            length: 1000,
+            bits: 16,
+            sampleRate: 16000,
+        };
+    }
+
     async getFpsAndDuration(asset: Asset) {
         try {
             const { stdout } = await execFileAsync(env.ffprobePath, [
@@ -57,11 +68,23 @@ export class AssetMediaService {
     }
 
     async generatePeaks(asset: Asset) {
-        const tempWavPath = join(env.workRoot, asset.sessionId, "assets", asset.id, "peaks-temp.wav");
         const peaksPath = join(env.workRoot, asset.sessionId, "assets", asset.id, "peaks.json");
+
+        // Return cached file if it already exists
+        try {
+            const cached = await readFile(peaksPath, "utf8");
+            return { peaksPath, payload: JSON.parse(cached) as ReturnType<typeof this.buildFallbackPeaksPayload> };
+        }
+        catch {
+            // File doesn't exist yet — proceed with generation
+        }
+
+        // Use a unique temp name per call to prevent concurrent requests from trampling each other
+        const tempWavPath = join(env.workRoot, asset.sessionId, "assets", asset.id, `peaks-temp-${randomUUID()}.wav`);
 
         try {
             await execFileAsync(env.ffmpegPath, [
+                "-y",
                 "-i",
                 asset.sourcePath,
                 "-vn",
@@ -74,8 +97,7 @@ export class AssetMediaService {
                 "-af",
                 "highpass=f=300,lowpass=f=3000,volume=1.0",
                 tempWavPath,
-                "-y",
-            ]);
+            ], { maxBuffer: 10 * 1024 * 1024 });
 
             const { stderr } = await execFileAsync(env.ffmpegPath, [
                 "-i",
@@ -85,7 +107,7 @@ export class AssetMediaService {
                 "-f",
                 "null",
                 "-",
-            ]);
+            ], { maxBuffer: 10 * 1024 * 1024 });
 
             const peaks: number[] = [];
             const speechMin = -40;
@@ -120,9 +142,21 @@ export class AssetMediaService {
             };
         }
         catch (error) {
-            throw new InternalServerErrorException(
-                `Failed to generate peaks for asset ${asset.id}: ${String(error)}`,
-            );
+            this.logger.warn(`Peaks generation failed for asset ${asset.id}, using fallback: ${String(error)}`);
+            const fallbackPayload = this.buildFallbackPeaksPayload();
+
+            try {
+                await writeFile(peaksPath, JSON.stringify(fallbackPayload));
+                return {
+                    peaksPath,
+                    payload: fallbackPayload,
+                };
+            }
+            catch {
+                throw new InternalServerErrorException(
+                    `Failed to generate peaks for asset ${asset.id}: ${String(error)}`,
+                );
+            }
         }
         finally {
             await rm(tempWavPath, { force: true });

@@ -6,6 +6,21 @@ import { PrismaService } from "../prisma/prisma.service";
 export class ResultsService {
     constructor(private readonly prisma: PrismaService) { }
 
+    async getOwnedResultById(sessionId: string, resultId: string) {
+        const result = await this.prisma.result.findFirst({
+            where: {
+                sessionId,
+                id: resultId,
+            },
+        });
+
+        if (!result) {
+            throw new NotFoundException("Result not found");
+        }
+
+        return result;
+    }
+
     async getOwnedResultByJobId(sessionId: string, jobId: string) {
         const result = await this.prisma.result.findFirst({
             where: {

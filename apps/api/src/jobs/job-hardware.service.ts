@@ -12,6 +12,11 @@ interface HardwareResolution {
     effectiveHardware: HardwareOption;
 }
 
+interface HardwareCapabilities {
+    detected: HardwareOption;
+    available: HardwareOption[];
+}
+
 @Injectable()
 export class JobHardwareService {
     private capabilityPromise: Promise<Set<HardwareOption>> | null = null;
@@ -23,6 +28,16 @@ export class JobHardwareService {
         return {
             queueName: this.getQueueName(effectiveHardware),
             effectiveHardware,
+        };
+    }
+
+    async getCapabilities(): Promise<HardwareCapabilities> {
+        const availableSet = await this.getAvailableHardware();
+        const detected = this.resolveEffectiveHardware(HardwareOption.auto, availableSet);
+
+        return {
+            detected,
+            available: Array.from(availableSet.values()),
         };
     }
 

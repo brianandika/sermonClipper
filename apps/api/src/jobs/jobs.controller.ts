@@ -5,6 +5,7 @@ import { SESSION_COOKIE_NAME } from "@sermon-clipper/shared";
 import { AssetsService } from "../assets/assets.service";
 import { SessionService } from "../sessions/session.service";
 import { CreateJobDto } from "./create-job.dto";
+import { JobHardwareService } from "./job-hardware.service";
 import { JobsService } from "./jobs.service";
 
 @Controller("jobs")
@@ -13,7 +14,13 @@ export class JobsController {
         private readonly jobsService: JobsService,
         private readonly assetsService: AssetsService,
         private readonly sessionService: SessionService,
+        private readonly jobHardwareService: JobHardwareService,
     ) { }
+
+    @Get("hardware")
+    async getHardwareCapabilities() {
+        return this.jobHardwareService.getCapabilities();
+    }
 
     @Post()
     async create(

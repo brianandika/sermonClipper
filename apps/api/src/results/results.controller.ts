@@ -1,5 +1,6 @@
-import { Controller, Get, Param, Req } from "@nestjs/common";
+import { Controller, Get, Param, Req, Res } from "@nestjs/common";
 import type { Request } from "express";
+import type { Response } from "express";
 import { SESSION_COOKIE_NAME, type ResultResponse } from "@sermon-clipper/shared";
 import { SessionService } from "../sessions/session.service";
 import { ResultsService } from "./results.service";
@@ -19,5 +20,29 @@ export class ResultsController {
         const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
         const result = await this.resultsService.getOwnedResultByJobId(session.id, jobId);
         return this.resultsService.toResponse(result);
+    }
+
+    @Get(":resultId/audio")
+    async getAudioArtifact(
+        @Req() request: Request,
+        @Res() response: Response,
+        @Param("resultId") resultId: string,
+    ): Promise<void> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const result = await this.resultsService.getOwnedResultById(session.id, resultId);
+        response.type("audio/mpeg");
+        response.sendFile(result.audioPath);
+    }
+
+    @Get(":resultId/video")
+    async getVideoArtifact(
+        @Req() request: Request,
+        @Res() response: Response,
+        @Param("resultId") resultId: string,
+    ): Promise<void> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const result = await this.resultsService.getOwnedResultById(session.id, resultId);
+        response.type("video/mp4");
+        response.sendFile(result.videoPath);
     }
 }

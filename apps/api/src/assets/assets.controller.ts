@@ -101,6 +101,19 @@ export class AssetsController {
         return this.toAssetResponse(asset);
     }
 
+    @Get(":assetId/source")
+    async getAssetSource(
+        @Req() request: Request,
+        @Res() response: Response,
+        @Param("assetId") assetId: string,
+    ): Promise<void> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const asset = await this.assetsService.getOwnedAsset(session.id, assetId);
+
+        response.type(asset.mimeType || "application/octet-stream");
+        response.sendFile(asset.sourcePath);
+    }
+
     @Get(":assetId/fps")
     async getFps(
         @Req() request: Request,
@@ -129,9 +142,18 @@ export class AssetsController {
     ): Promise<PeaksResponse> {
         const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
         const asset = await this.assetsService.getOwnedAsset(session.id, assetId);
-        const peaks = await this.assetMediaService.generatePeaks(asset);
-        await this.assetsService.updateMediaMetadata(asset.id, { peaksPath: peaks.peaksPath });
-
-        return peaks.payload;
+        try {
+            const peaks = await this.assetMediaService.generatePeaks(asset);
+            await this.assetsService.updateMediaMetadata(asset.id, { peaksPath: peaks.peaksPath });
+            return peaks.payload;
+        }
+        catch {
+            return {
+                data: new Array<number>(1000).fill(0),
+                length: 1000,
+                bits: 16,
+                sampleRate: 16000,
+            };
+        }
     }
 }

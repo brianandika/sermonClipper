@@ -7,10 +7,11 @@
         "packages/*"
     ],
     "scripts": {
-        "build": "npm run build:shared && npm run build:api && npm run build:worker",
+        "build": "npm run prisma:generate && npm run build:shared && npm run build:api && npm run build:worker && npm run build:web",
         "build:shared": "npm run build --workspace @sermon-clipper/shared",
         "build:api": "npm run build --workspace @sermon-clipper/api",
         "build:worker": "npm run build --workspace @sermon-clipper/worker",
+        "build:web": "npm run build --workspace @sermon-clipper/web",
         "dev:api": "npm run start:dev --workspace @sermon-clipper/api",
         "dev:worker": "npm run start:dev --workspace @sermon-clipper/worker",
         "dev:web": "npm run dev --workspace @sermon-clipper/web",
