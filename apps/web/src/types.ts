@@ -64,7 +64,16 @@ export interface Job {
   };
   failureReason: string | null;
   createdAt: string;
+  startedAt: string | null;
   finishedAt: string | null;
+  result: Result | null;
+  progress: {
+    stage: string;
+    stageProgress: number;
+    overallProgress: number;
+    message: string;
+    updatedAt: string;
+  } | null;
 }
 
 export interface Result {

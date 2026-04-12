@@ -68,6 +68,110 @@ const defaultFps = 30;
 const defaultIntroSampleRate = 44100;
 
 const prisma = new PrismaClient();
+const activeJobControllers = new Map<string, Set<AbortController>>();
+const activeJobCancelWatchers = new Map<string, NodeJS.Timeout>();
+
+class JobCanceledError extends Error {
+    constructor(jobId: string) {
+        super(`Job ${jobId} was canceled`);
+        this.name = "JobCanceledError";
+    }
+}
+
+type TrackedExecOptions = {
+    maxBuffer?: number;
+};
+
+function registerJobController(jobId: string, controller: AbortController) {
+    const controllers = activeJobControllers.get(jobId) ?? new Set<AbortController>();
+    controllers.add(controller);
+    activeJobControllers.set(jobId, controllers);
+}
+
+function unregisterJobController(jobId: string, controller: AbortController) {
+    const controllers = activeJobControllers.get(jobId);
+    if (!controllers) {
+        return;
+    }
+
+    controllers.delete(controller);
+    if (controllers.size === 0) {
+        activeJobControllers.delete(jobId);
+    }
+}
+
+function abortJobProcesses(jobId: string) {
+    const controllers = activeJobControllers.get(jobId);
+    if (!controllers) {
+        return;
+    }
+
+    for (const controller of controllers) {
+        controller.abort();
+    }
+}
+
+function startJobCancellationWatcher(jobId: string) {
+    if (activeJobCancelWatchers.has(jobId)) {
+        return;
+    }
+
+    let checking = false;
+    const intervalId = setInterval(() => {
+        if (checking) {
+            return;
+        }
+
+        checking = true;
+        void prisma.job.findUnique({
+            where: { id: jobId },
+            select: { status: true },
+        }).then((job) => {
+            if (job?.status === PrismaJobStatus.canceled) {
+                abortJobProcesses(jobId);
+            }
+        }).finally(() => {
+            checking = false;
+        });
+    }, 1000);
+
+    activeJobCancelWatchers.set(jobId, intervalId);
+}
+
+function stopJobCancellationWatcher(jobId: string) {
+    const intervalId = activeJobCancelWatchers.get(jobId);
+    if (!intervalId) {
+        return;
+    }
+
+    clearInterval(intervalId);
+    activeJobCancelWatchers.delete(jobId);
+    activeJobControllers.delete(jobId);
+}
+
+async function execFileForJob(jobId: string, command: string, args: string[], options?: TrackedExecOptions) {
+    await assertJobNotCanceled(jobId);
+
+    const controller = new AbortController();
+    registerJobController(jobId, controller);
+
+    try {
+        return await execFileAsync(command, args, {
+            maxBuffer: options?.maxBuffer,
+            signal: controller.signal,
+        });
+    }
+    catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+            throw new JobCanceledError(jobId);
+        }
+
+        throw error;
+    }
+    finally {
+        unregisterJobController(jobId, controller);
+    }
+}
 
 function getJobRoot(sessionId: string, jobId: string) {
     return join(runtimeEnv.workRoot, sessionId, "jobs", jobId);
@@ -226,9 +330,20 @@ async function updateJobProgress(jobId: string, data: {
     });
 }
 
-async function detectOutputDuration(videoPath: string) {
+async function assertJobNotCanceled(jobId: string) {
+    const job = await prisma.job.findUnique({
+        where: { id: jobId },
+        select: { status: true },
+    });
+
+    if (job?.status === PrismaJobStatus.canceled) {
+        throw new JobCanceledError(jobId);
+    }
+}
+
+async function detectOutputDuration(jobId: string, videoPath: string) {
     try {
-        const { stdout } = await execFileAsync(runtimeEnv.ffprobePath, [
+        const { stdout } = await execFileForJob(jobId, runtimeEnv.ffprobePath, [
             "-v",
             "error",
             "-show_entries",
@@ -246,9 +361,9 @@ async function detectOutputDuration(videoPath: string) {
     }
 }
 
-async function detectMediaProperties(videoPath: string) {
+async function detectMediaProperties(jobId: string, videoPath: string) {
     try {
-        const { stdout } = await execFileAsync(runtimeEnv.ffprobePath, [
+        const { stdout } = await execFileForJob(jobId, runtimeEnv.ffprobePath, [
             "-v",
             "error",
             "-show_streams",
@@ -324,8 +439,8 @@ function getLoudnormFilter(analysis?: LoudnormAnalysis) {
     return `loudnorm=${filterParts.join(":")}`;
 }
 
-async function analyzeAudioNormalization(inputPath: string) {
-    const { stderr } = await execFileAsync(runtimeEnv.ffmpegPath, [
+async function analyzeAudioNormalization(jobId: string, inputPath: string) {
+    const { stderr } = await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
         "-hide_banner",
         "-y",
         "-i",
@@ -341,8 +456,8 @@ async function analyzeAudioNormalization(inputPath: string) {
     return getLoudnormAnalysis(stderr);
 }
 
-async function normalizeVideoAudio(inputPath: string, outputPath: string, analysis: LoudnormAnalysis) {
-    await execFileAsync(runtimeEnv.ffmpegPath, [
+async function normalizeVideoAudio(jobId: string, inputPath: string, outputPath: string, analysis: LoudnormAnalysis) {
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
         "-hide_banner",
         "-y",
         "-i",
@@ -359,8 +474,8 @@ async function normalizeVideoAudio(inputPath: string, outputPath: string, analys
     ]);
 }
 
-async function normalizeAudioOnly(inputPath: string, outputPath: string, analysis: LoudnormAnalysis) {
-    await execFileAsync(runtimeEnv.ffmpegPath, [
+async function normalizeAudioOnly(jobId: string, inputPath: string, outputPath: string, analysis: LoudnormAnalysis) {
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
         "-hide_banner",
         "-y",
         "-i",
@@ -377,6 +492,7 @@ async function normalizeAudioOnly(inputPath: string, outputPath: string, analysi
 }
 
 async function encodeSegment(
+    jobId: string,
     sourcePath: string,
     outputPath: string,
     startTime: number,
@@ -411,11 +527,11 @@ async function encodeSegment(
         outputPath,
     );
 
-    await execFileAsync(runtimeEnv.ffmpegPath, args);
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
 }
 
-async function concatSegments(manifestPath: string, outputPath: string) {
-    await execFileAsync(runtimeEnv.ffmpegPath, [
+async function concatSegments(jobId: string, manifestPath: string, outputPath: string) {
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
         "-hide_banner",
         "-y",
         "-f",
@@ -430,8 +546,8 @@ async function concatSegments(manifestPath: string, outputPath: string) {
     ]);
 }
 
-async function extractAudio(videoPath: string, audioPath: string) {
-    await execFileAsync(runtimeEnv.ffmpegPath, [
+async function extractAudio(jobId: string, videoPath: string, audioPath: string) {
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
         "-hide_banner",
         "-y",
         "-i",
@@ -448,6 +564,7 @@ function getSequenceDuration(segmentDurations: number[], transitionDurations: nu
 }
 
 async function renderAudioArtifact(
+    jobId: string,
     segmentPaths: string[],
     segmentDurations: number[],
     transitionDurations: number[],
@@ -504,10 +621,11 @@ async function renderAudioArtifact(
         outputPath,
     );
 
-    await execFileAsync(runtimeEnv.ffmpegPath, args);
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
 }
 
 async function renderSegmentsWithTransitions(
+    jobId: string,
     segmentPaths: string[],
     segmentDurations: number[],
     outputPath: string,
@@ -570,10 +688,11 @@ async function renderSegmentsWithTransitions(
         outputPath,
     );
 
-    await execFileAsync(runtimeEnv.ffmpegPath, args);
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
 }
 
 async function renderConcatenatedVideoArtifact(
+    jobId: string,
     segmentPaths: string[],
     segmentDurations: number[],
     outputPath: string,
@@ -616,16 +735,17 @@ async function renderConcatenatedVideoArtifact(
         outputPath,
     );
 
-    await execFileAsync(runtimeEnv.ffmpegPath, args);
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
 }
 
 async function createStillImageClip(
+    jobId: string,
     imagePath: string,
     outputPath: string,
     introDuration: number,
     fps: number,
 ) {
-    await execFileAsync(runtimeEnv.ffmpegPath, [
+    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
         "-hide_banner",
         "-y",
         "-loop",
@@ -655,21 +775,25 @@ async function createStillImageClip(
 }
 
 async function processClipJob(payload: ClipProcessJobData) {
-    const job = await prisma.job.findUnique({
-        where: { id: payload.jobId },
-        include: { asset: true },
-    });
+    await assertJobNotCanceled(payload.jobId);
+    startJobCancellationWatcher(payload.jobId);
 
-    if (!job) {
-        throw new Error(`Job ${payload.jobId} not found`);
-    }
+    try {
+        const job = await prisma.job.findUnique({
+            where: { id: payload.jobId },
+            include: { asset: true },
+        });
 
-    const request = job.payloadJson as unknown as CreateJobRequest;
-    const segments = getSegments(request);
+        if (!job) {
+            throw new Error(`Job ${payload.jobId} not found`);
+        }
 
-    if (segments.length === 0) {
-        throw new Error("No output segments remain after applying clip gaps");
-    }
+        const request = job.payloadJson as unknown as CreateJobRequest;
+        const segments = getSegments(request);
+
+        if (segments.length === 0) {
+            throw new Error("No output segments remain after applying clip gaps");
+        }
 
     const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
     const requestedFps = request.fps ?? defaultFps;
@@ -698,8 +822,8 @@ async function processClipJob(payload: ClipProcessJobData) {
         throw new Error(`Intro image asset ${request.introImageAssetId} not found`);
     }
 
-    await mkdir(segmentsRoot, { recursive: true });
-    await updateJobProgress(job.id, {
+        await mkdir(segmentsRoot, { recursive: true });
+        await updateJobProgress(job.id, {
         status: PrismaJobStatus.preparing,
         effectiveHardware,
         startedAt: new Date(),
@@ -709,33 +833,37 @@ async function processClipJob(payload: ClipProcessJobData) {
         message: "Preparing clip extraction",
     });
 
-    const segmentPaths: string[] = [];
-    const segmentDurations: number[] = [];
+        const segmentPaths: string[] = [];
+        const segmentDurations: number[] = [];
 
-    for (const [index, segment] of segments.entries()) {
+        for (const [index, segment] of segments.entries()) {
+            await assertJobNotCanceled(job.id);
+
         const duration = getDurationSeconds(segment.startTime, segment.endTime);
 
         if (duration <= 0) {
             throw new Error(`Invalid clip duration for segment ${index + 1}`);
         }
 
-        const segmentPath = join(segmentsRoot, `segment-${String(index + 1).padStart(2, "0")}.mp4`);
-        await encodeSegment(job.asset.sourcePath, segmentPath, segment.startTime, duration, effectiveHardware, requestedFps);
-        segmentPaths.push(segmentPath);
-        segmentDurations.push(duration);
+            const segmentPath = join(segmentsRoot, `segment-${String(index + 1).padStart(2, "0")}.mp4`);
+            await encodeSegment(job.id, job.asset.sourcePath, segmentPath, segment.startTime, duration, effectiveHardware, requestedFps);
+            segmentPaths.push(segmentPath);
+            segmentDurations.push(duration);
 
-        const progress = Math.round(((index + 1) / segments.length) * 100);
-        await updateJobProgress(job.id, {
+            const progress = Math.round(((index + 1) / segments.length) * 100);
+            await updateJobProgress(job.id, {
             status: PrismaJobStatus.preparing,
             stage: JobStage.extractClips,
             stageProgress: progress,
             overallProgress: Math.min(60, 10 + Math.round(((index + 1) / segments.length) * 50)),
             message: `Encoded segment ${index + 1} of ${segments.length}`,
-        });
-    }
+            });
+        }
 
-    const audioTransitionDuration = getTransitionDuration(segments, defaultAudioTransitionDurationSeconds);
-    const audioTransitionDurations = getUniformTransitionDurations(segmentDurations, audioTransitionDuration);
+        const audioTransitionDuration = getTransitionDuration(segments, defaultAudioTransitionDurationSeconds);
+        const audioTransitionDurations = getUniformTransitionDurations(segmentDurations, audioTransitionDuration);
+
+    await assertJobNotCanceled(job.id);
 
     await updateJobProgress(job.id, {
         status: PrismaJobStatus.encoding_audio,
@@ -745,7 +873,9 @@ async function processClipJob(payload: ClipProcessJobData) {
         message: "Rendering stitched audio artifact",
     });
 
-    await renderAudioArtifact(segmentPaths, segmentDurations, audioTransitionDurations, audioProgramPath);
+        await renderAudioArtifact(job.id, segmentPaths, segmentDurations, audioTransitionDurations, audioProgramPath);
+
+    await assertJobNotCanceled(job.id);
 
     await updateJobProgress(job.id, {
         status: PrismaJobStatus.processing_audio,
@@ -755,7 +885,9 @@ async function processClipJob(payload: ClipProcessJobData) {
         message: "Analyzing stitched audio levels",
     });
 
-    const audioLoudnormAnalysis = await analyzeAudioNormalization(audioProgramPath);
+        const audioLoudnormAnalysis = await analyzeAudioNormalization(job.id, audioProgramPath);
+
+    await assertJobNotCanceled(job.id);
 
     await updateJobProgress(job.id, {
         status: PrismaJobStatus.processing_audio,
@@ -766,20 +898,24 @@ async function processClipJob(payload: ClipProcessJobData) {
     });
 
     try {
-        await normalizeAudioOnly(audioProgramPath, outputAudioPath, audioLoudnormAnalysis);
+            await normalizeAudioOnly(job.id, audioProgramPath, outputAudioPath, audioLoudnormAnalysis);
     }
     finally {
         await rm(audioProgramPath, { force: true });
     }
 
-    const videoSegmentPaths = [...segmentPaths];
-    const videoSegmentDurations = [...segmentDurations];
+    await assertJobNotCanceled(job.id);
 
-    if (introImageAsset) {
-        await createStillImageClip(introImageAsset.sourcePath, introClipPath, introDuration, requestedFps);
-        videoSegmentPaths.unshift(introClipPath);
-        videoSegmentDurations.unshift(introDuration);
-    }
+        const videoSegmentPaths = [...segmentPaths];
+        const videoSegmentDurations = [...segmentDurations];
+
+        if (introImageAsset) {
+            await createStillImageClip(job.id, introImageAsset.sourcePath, introClipPath, introDuration, requestedFps);
+            videoSegmentPaths.unshift(introClipPath);
+            videoSegmentDurations.unshift(introDuration);
+        }
+
+    await assertJobNotCanceled(job.id);
 
     const videoTransitionDuration = getTransitionDuration(videoSegmentDurations.map((duration, index) => ({
         startTime: 0,
@@ -799,13 +935,16 @@ async function processClipJob(payload: ClipProcessJobData) {
             message: `Rendering ${videoSegmentPaths.length - 1} video crossfade transition(s)`,
         });
 
-        await renderSegmentsWithTransitions(
+            await renderSegmentsWithTransitions(
+            job.id,
             videoSegmentPaths,
             videoSegmentDurations,
             videoProgramPath,
             videoTransitionDurations,
             effectiveHardware,
         );
+
+        await assertJobNotCanceled(job.id);
 
         await updateJobProgress(job.id, {
             status: PrismaJobStatus.encoding_video,
@@ -824,8 +963,10 @@ async function processClipJob(payload: ClipProcessJobData) {
             message: "Rendering stitched video artifact",
         });
 
-        await renderConcatenatedVideoArtifact(videoSegmentPaths, videoSegmentDurations, videoProgramPath, effectiveHardware);
+            await renderConcatenatedVideoArtifact(job.id, videoSegmentPaths, videoSegmentDurations, videoProgramPath, effectiveHardware);
     }
+
+    await assertJobNotCanceled(job.id);
 
     await updateJobProgress(job.id, {
         status: PrismaJobStatus.processing_audio,
@@ -836,7 +977,9 @@ async function processClipJob(payload: ClipProcessJobData) {
     });
 
     try {
-        const videoLoudnormAnalysis = await analyzeAudioNormalization(videoProgramPath);
+            const videoLoudnormAnalysis = await analyzeAudioNormalization(job.id, videoProgramPath);
+
+        await assertJobNotCanceled(job.id);
 
         await updateJobProgress(job.id, {
             status: PrismaJobStatus.processing_audio,
@@ -846,15 +989,17 @@ async function processClipJob(payload: ClipProcessJobData) {
             message: "Normalizing stitched video audio",
         });
 
-        await normalizeVideoAudio(videoProgramPath, outputVideoPath, videoLoudnormAnalysis);
+            await normalizeVideoAudio(job.id, videoProgramPath, outputVideoPath, videoLoudnormAnalysis);
     }
     finally {
         await rm(videoProgramPath, { force: true });
         await rm(introClipPath, { force: true });
     }
 
-    const outputStats = await stat(outputVideoPath);
-    const outputDuration = await detectOutputDuration(outputVideoPath);
+    await assertJobNotCanceled(job.id);
+
+        const outputStats = await stat(outputVideoPath);
+        const outputDuration = await detectOutputDuration(job.id, outputVideoPath);
 
     await writeFile(processingManifestPath, JSON.stringify({
         jobId: job.id,
@@ -879,7 +1024,7 @@ async function processClipJob(payload: ClipProcessJobData) {
     const expiresAt = new Date();
     expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
 
-    await prisma.$transaction([
+        await prisma.$transaction([
         prisma.result.upsert({
             where: { jobId: job.id },
             update: {
@@ -927,15 +1072,19 @@ async function processClipJob(payload: ClipProcessJobData) {
         }),
     ]);
 
-    await updateJobProgress(job.id, {
-        status: PrismaJobStatus.completed,
-        finishedAt: new Date(),
-        failureReason: null,
-        stage: JobStage.complete,
-        stageProgress: 100,
-        overallProgress: 100,
-        message: "Clip processing complete",
-    });
+        await updateJobProgress(job.id, {
+            status: PrismaJobStatus.completed,
+            finishedAt: new Date(),
+            failureReason: null,
+            stage: JobStage.complete,
+            stageProgress: 100,
+            overallProgress: 100,
+            message: "Clip processing complete",
+        });
+    }
+    finally {
+        stopJobCancellationWatcher(payload.jobId);
+    }
 }
 
 function getEnabledQueues() {
@@ -969,6 +1118,20 @@ async function createQueueWorker(queueName: QueueName, connection: IORedis) {
             }
             catch (error) {
                 const reason = error instanceof Error ? error.message : String(error);
+
+                if (error instanceof JobCanceledError) {
+                    await updateJobProgress(bullJob.data.jobId, {
+                        status: PrismaJobStatus.canceled,
+                        finishedAt: new Date(),
+                        failureReason: "Canceled by user",
+                        stage: JobStage.finalize,
+                        stageProgress: 0,
+                        overallProgress: 0,
+                        message: "Job canceled",
+                    });
+                    return;
+                }
+
                 await updateJobProgress(bullJob.data.jobId, {
                     status: PrismaJobStatus.failed,
                     finishedAt: new Date(),

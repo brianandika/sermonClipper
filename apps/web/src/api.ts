@@ -90,6 +90,16 @@ export const getJob = async (jobId: string): Promise<Job> => {
   return data;
 };
 
+export const getJobs = async (): Promise<Job[]> => {
+  const { data } = await api.get('/jobs');
+  return data;
+};
+
+export const cancelJob = async (jobId: string): Promise<Job> => {
+  const { data } = await api.post(`/jobs/${jobId}/cancel`);
+  return data;
+};
+
 export const pollJob = async (
   jobId: string,
   maxAttempts: number = 300,

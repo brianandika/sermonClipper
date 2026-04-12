@@ -2,16 +2,19 @@ import { useState, useEffect } from 'react';
 import { bootstrapSession } from './api';
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
+import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
-import { Asset, Job, Result } from './types';
+import { Asset, Job, Result, Session } from './types';
 
-type AppFlow = 'upload' | 'editor' | 'results';
+type AppFlow = 'upload' | 'editor' | 'jobs' | 'results';
 
 function App() {
   const [flow, setFlow] = useState<AppFlow>('upload');
   const [asset, setAsset] = useState<Asset | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [result, setResult] = useState<Result | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,7 +22,11 @@ function App() {
   useEffect(() => {
     const init = async () => {
       try {
-        await bootstrapSession();
+        const nextSession = await bootstrapSession();
+        setSession({
+          sessionId: nextSession.sessionId,
+          expiresAt: nextSession.expiresAt,
+        });
         setLoading(false);
       } catch (err) {
         setError(`Failed to initialize session: ${err}`);
@@ -34,9 +41,16 @@ function App() {
     setFlow('editor');
   };
 
-  const handleEditorSuccess = (createdJob: Job, createdResult: Result) => {
+  const handleEditorSuccess = (createdJob: Job) => {
     setJob(createdJob);
-    setResult(createdResult);
+    setActiveJobId(createdJob.jobId);
+    setResult(null);
+    setFlow('jobs');
+  };
+
+  const handleOpenResult = (selectedJob: Job, selectedResult: Result) => {
+    setJob(selectedJob);
+    setResult(selectedResult);
     setFlow('results');
   };
 
@@ -44,6 +58,7 @@ function App() {
     setAsset(null);
     setJob(null);
     setResult(null);
+    setActiveJobId(null);
     setFlow('upload');
   };
 
@@ -60,6 +75,9 @@ function App() {
       {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} />}
       {flow === 'editor' && asset && (
         <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleReset} />
+      )}
+      {flow === 'jobs' && (
+        <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onReset={handleReset} />
       )}
       {flow === 'results' && result && job && (
         <ResultsFlow result={result} job={job} onReset={handleReset} />

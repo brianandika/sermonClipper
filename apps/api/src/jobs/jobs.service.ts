@@ -6,6 +6,7 @@ import {
     JobStatus as SharedJobStatus,
     QUEUE_NAMES,
     type CreateJobRequest,
+    type QueueName,
 } from "@sermon-clipper/shared";
 import { type Prisma } from "@prisma/client";
 import { HardwareOption } from "@prisma/client";
@@ -159,6 +160,78 @@ export class JobsService {
         }
 
         return job;
+    }
+
+    async listOwnedJobs(sessionId: string) {
+        return this.prisma.job.findMany({
+            where: { sessionId },
+            include: {
+                progress: true,
+                result: true,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+    }
+
+    async listJobs() {
+        return this.prisma.job.findMany({
+            include: {
+                progress: true,
+                result: true,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+    }
+
+    async cancelOwnedJob(sessionId: string, jobId: string) {
+        const job = await this.getOwnedJob(sessionId, jobId);
+
+        if (
+            job.status === SharedJobStatus.completed
+            || job.status === SharedJobStatus.failed
+            || job.status === SharedJobStatus.canceled
+            || job.status === SharedJobStatus.expired
+        ) {
+            throw new BadRequestException(`Job cannot be canceled from status ${job.status}`);
+        }
+
+        const queueOutcome = await this.clipProcessQueueService.removeIfWaiting(job.queueName as QueueName, job.id);
+        const message = queueOutcome.removed
+            ? "Canceled and removed from queue"
+            : "Cancellation requested";
+
+        return this.prisma.job.update({
+            where: { id: job.id },
+            data: {
+                status: SharedJobStatus.canceled,
+                finishedAt: new Date(),
+                failureReason: "Canceled by user",
+                progress: {
+                    upsert: {
+                        create: {
+                            stage: JobStage.finalize,
+                            stageProgress: 0,
+                            overallProgress: job.progress?.overallProgress ?? 0,
+                            message,
+                        },
+                        update: {
+                            stage: JobStage.finalize,
+                            stageProgress: 0,
+                            overallProgress: job.progress?.overallProgress ?? 0,
+                            message,
+                        },
+                    },
+                },
+            },
+            include: {
+                progress: true,
+                result: true,
+            },
+        });
     }
 
     toResponse(job: JobWithProgress) {

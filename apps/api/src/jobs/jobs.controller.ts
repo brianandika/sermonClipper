@@ -22,6 +22,15 @@ export class JobsController {
         return this.jobHardwareService.getCapabilities();
     }
 
+    @Get()
+    async listJobs(
+        @Req() request: Request,
+    ): Promise<JobResponse[]> {
+        await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const jobs = await this.jobsService.listJobs();
+        return jobs.map((job) => this.jobsService.toResponse(job));
+    }
+
     @Post()
     async create(
         @Req() request: Request,
@@ -49,6 +58,16 @@ export class JobsController {
     ): Promise<JobResponse> {
         const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
         const job = await this.jobsService.getOwnedJob(session.id, jobId);
+        return this.jobsService.toResponse(job);
+    }
+
+    @Post(":jobId/cancel")
+    async cancelJob(
+        @Req() request: Request,
+        @Param("jobId") jobId: string,
+    ): Promise<JobResponse> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const job = await this.jobsService.cancelOwnedJob(session.id, jobId);
         return this.jobsService.toResponse(job);
     }
 }

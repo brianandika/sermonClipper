@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import WaveSurfer from 'wavesurfer.js';
-import { Asset, HardwareOption, Job, PeaksResponse, Result } from '../types';
+import { Asset, HardwareOption, Job, PeaksResponse } from '../types';
 import {
   createJob,
   getAssetFps,
   getAssetPeaks,
   getAssetSourceUrl,
   getHardwareCapabilities,
-  getResult,
-  pollJob,
   uploadAsset,
 } from '../api';
 
 interface EditorFlowProps {
   asset: Asset;
-  onSuccess: (job: Job, result: Result) => void;
+  onSuccess: (job: Job) => void;
   onCancel: () => void;
 }
 
@@ -58,7 +56,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const [coverImageAssetId, setCoverImageAssetId] = useState<string | null>(null);
   const [coverImageUploading, setCoverImageUploading] = useState(false);
   const [playbackSpeedIndex, setPlaybackSpeedIndex] = useState(DEFAULT_PLAYBACK_INDEX);
-  const [processing, setProcessing] = useState(false);
+  const [submittingJob, setSubmittingJob] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
 
@@ -381,7 +379,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
       return;
     }
 
-    setProcessing(true);
+    setSubmittingJob(true);
     setError(null);
 
     try {
@@ -401,17 +399,11 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         hardware,
       });
 
-      const completedJob = await pollJob(job.jobId);
-      if (completedJob.status === 'failed') {
-        throw new Error(completedJob.failureReason || 'Job processing failed');
-      }
-
-      const result = await getResult(job.jobId);
-      onSuccess(completedJob, result);
+      onSuccess(job);
     } catch (err) {
       setError(`Processing failed: ${String(err)}`);
     } finally {
-      setProcessing(false);
+      setSubmittingJob(false);
     }
   };
 
@@ -424,7 +416,6 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
 
   const topStartPercent = effectiveDuration > 0 ? (Math.max(0, startTime) / effectiveDuration) * 100 : 0;
   const topEndPercent = effectiveDuration > 0 ? ((effectiveDuration - Math.max(startTime, endTime)) / effectiveDuration) * 100 : 0;
-  const playheadPercent = effectiveDuration > 0 ? (currentTime / effectiveDuration) * 100 : 0;
 
   const onVideoPlay = () => {
     if (!videoRef.current) {
@@ -626,23 +617,12 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
       {error ? <p style={{ color: 'red', marginBottom: '1rem' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem', width: '100%' }}>
-        <button type="button" className="btn" onClick={handleProcess} disabled={processing || coverImageUploading} style={{ flex: 1 }}>
-          {processing ? 'Processing...' : 'Process Video'}
+        <button type="button" className="btn" onClick={handleProcess} disabled={submittingJob || coverImageUploading} style={{ flex: 1 }}>
+          {submittingJob ? 'Submitting Job...' : 'Process Video'}
         </button>
-        <button type="button" className="btn" onClick={onCancel} disabled={processing} style={{ flex: 1, background: '#6b7280' }}>
+        <button type="button" className="btn" onClick={onCancel} disabled={submittingJob} style={{ flex: 1, background: '#6b7280' }}>
           Cancel
         </button>
-      </div>
-
-      <div id="progress-modal" className="modal" style={{ display: processing ? 'block' : 'none' }}>
-        <div className="modal-content">
-          <h2 id="progress-title">Processing...</h2>
-          <div className="progress-bar">
-            <div className="progress" style={{ width: processing ? '100%' : '0%' }}>
-              <div className="loading-animation" />
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
