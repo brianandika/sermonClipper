@@ -8,6 +8,13 @@ import { Asset, Job, Result, Session } from './types';
 
 type AppFlow = 'upload' | 'editor' | 'jobs' | 'results';
 
+interface NavItem {
+  key: AppFlow;
+  label: string;
+  description: string;
+  disabled?: boolean;
+}
+
 function App() {
   const [flow, setFlow] = useState<AppFlow>('upload');
   const [asset, setAsset] = useState<Asset | null>(null);
@@ -17,6 +24,8 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pendingFlow, setPendingFlow] = useState<AppFlow | null>(null);
+  const [showLeaveEditorModal, setShowLeaveEditorModal] = useState(false);
 
   // Initialize session on mount
   useEffect(() => {
@@ -62,6 +71,84 @@ function App() {
     setFlow('upload');
   };
 
+  const navItems: NavItem[] = [
+    {
+      key: 'upload',
+      label: 'Upload',
+      description: 'Start a new session',
+    },
+    {
+      key: 'editor',
+      label: 'Edit',
+      description: asset ? 'Trim clips and add an intro' : 'Upload media first',
+      disabled: !asset,
+    },
+    {
+      key: 'jobs',
+      label: 'Jobs',
+      description: 'Monitor queue activity',
+    },
+    {
+      key: 'results',
+      label: 'Results',
+      description: result ? 'Review finished output' : 'Available after completion',
+      disabled: !result || !job,
+    },
+  ];
+
+  const pendingFlowLabel = navItems.find((item) => item.key === pendingFlow)?.label ?? 'another page';
+
+  const completeNavigation = (nextFlow: AppFlow) => {
+    if (nextFlow === 'editor' && !asset) {
+      return;
+    }
+    if (nextFlow === 'results' && (!result || !job)) {
+      return;
+    }
+    setFlow(nextFlow);
+  };
+
+  const requestFlowChange = (nextFlow: AppFlow) => {
+    if (nextFlow === flow) {
+      return;
+    }
+
+    if (flow === 'editor' && nextFlow !== 'editor') {
+      setPendingFlow(nextFlow);
+      setShowLeaveEditorModal(true);
+      return;
+    }
+
+    completeNavigation(nextFlow);
+  };
+
+  const handleNavigate = (nextFlow: AppFlow) => {
+    requestFlowChange(nextFlow);
+  };
+
+  const handleEditorCancel = () => {
+    setPendingFlow('upload');
+    setShowLeaveEditorModal(true);
+  };
+
+  const closeLeaveEditorModal = () => {
+    setPendingFlow(null);
+    setShowLeaveEditorModal(false);
+  };
+
+  const confirmLeaveEditor = () => {
+    const nextFlow = pendingFlow ?? 'upload';
+    setShowLeaveEditorModal(false);
+    setPendingFlow(null);
+
+    if (nextFlow === 'upload') {
+      handleReset();
+      return;
+    }
+
+    completeNavigation(nextFlow);
+  };
+
   if (loading) {
     return <div className="container"><p>Initializing...</p></div>;
   }
@@ -72,16 +159,64 @@ function App() {
 
   return (
     <div className="app">
-      {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} />}
-      {flow === 'editor' && asset && (
-        <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleReset} />
-      )}
-      {flow === 'jobs' && (
-        <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onReset={handleReset} />
-      )}
-      {flow === 'results' && result && job && (
-        <ResultsFlow result={result} job={job} onReset={handleReset} />
-      )}
+      <div className="app-shell">
+        <header className="app-header">
+          <div className="app-header-content">
+            <div>
+              <p className="app-eyebrow">Sermon Clipper</p>
+              <h1 className="app-title">Clip builder and processing queue</h1>
+            </div>
+            <p className="app-subtitle">Move between upload, edit, jobs, and results without losing the workflow context.</p>
+          </div>
+          <nav className="app-nav" aria-label="Primary">
+            {navItems.map((item, index) => (
+              <button
+                key={item.key}
+                type="button"
+                className={`app-nav-item${flow === item.key ? ' active' : ''}`}
+                onClick={() => handleNavigate(item.key)}
+                disabled={item.disabled}
+                aria-current={flow === item.key ? 'page' : undefined}
+              >
+                <span className="app-nav-step" aria-hidden="true">{index + 1}</span>
+                <span className="app-nav-label">{item.label}</span>
+                <span className="app-nav-description">{item.description}</span>
+              </button>
+            ))}
+          </nav>
+        </header>
+
+        {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} />}
+        {flow === 'editor' && asset && (
+          <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleEditorCancel} />
+        )}
+        {flow === 'jobs' && (
+          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onReset={handleReset} />
+        )}
+        {flow === 'results' && result && job && (
+          <ResultsFlow result={result} job={job} onReset={handleReset} />
+        )}
+      </div>
+
+      {showLeaveEditorModal ? (
+        <div className="app-modal-backdrop" role="presentation">
+          <div className="app-modal" role="dialog" aria-modal="true" aria-labelledby="leave-editor-title" aria-describedby="leave-editor-description">
+            <div className="app-modal-badge">Unsaved edit</div>
+            <h2 id="leave-editor-title" className="app-modal-title">Leave the edit page?</h2>
+            <p id="leave-editor-description" className="app-modal-copy">
+              If you switch to {pendingFlowLabel}, your current trim points, clip changes, and intro image selections will be discarded.
+            </p>
+            <div className="app-modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeLeaveEditorModal}>
+                Stay here
+              </button>
+              <button type="button" className="btn app-danger-button" onClick={confirmLeaveEditor}>
+                Leave editor
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

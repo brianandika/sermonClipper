@@ -141,6 +141,19 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
     };
   }, [asset.assetId]);
 
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
   // Initialize WaveSurfer when peaks data is available
   useEffect(() => {
     if (!waveformContainerRef.current || !videoRef.current || !peaks?.data?.length) {
