@@ -40,7 +40,7 @@ model Session {
 }
 
 model Asset {
-  id               String    @id @default(uuid())
+  id               String   @id @default(uuid())
   sessionId        String
   originalFilename String
   mimeType         String
@@ -50,32 +50,32 @@ model Asset {
   fps              Float?
   duration         Float?
   status           String
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  session          Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  session          Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   jobs             Job[]
 
   @@index([sessionId])
 }
 
 model Job {
-  id               String        @id @default(uuid())
-  sessionId        String
-  assetId          String
-  status           JobStatus     @default(queued)
-  requestedHardware HardwareOption @default(auto)
+  id                String               @id @default(uuid())
+  sessionId         String
+  assetId           String
+  status            JobStatus            @default(queued)
+  requestedHardware HardwareOption       @default(auto)
   effectiveHardware HardwareOption?
-  payloadJson      Json
-  queueName        String
-  failureReason    String?
-  createdAt        DateTime      @default(now())
-  startedAt        DateTime?
-  finishedAt       DateTime?
-  session          Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  asset            Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  progress         JobProgress?
-  result           Result?
-  artifacts        ProcessingArtifact[]
+  payloadJson       Json
+  queueName         String
+  failureReason     String?
+  createdAt         DateTime             @default(now())
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  session           Session              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  asset             Asset                @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  progress          JobProgress?
+  result            Result?
+  artifacts         ProcessingArtifact[]
 
   @@index([sessionId])
   @@index([assetId])
@@ -83,22 +83,22 @@ model Job {
 }
 
 model JobProgress {
-  jobId            String   @id
-  stage            String
-  stageProgress    Int
-  overallProgress  Int
-  message          String
-  updatedAt        DateTime @updatedAt
-  job              Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId           String   @id
+  stage           String
+  stageProgress   Int
+  overallProgress Int
+  message         String
+  updatedAt       DateTime @updatedAt
+  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
 }
 
 model Result {
   id           String   @id @default(uuid())
   jobId        String   @unique
   sessionId    String
-  videoPath    String
-  audioPath    String
-  manifestPath String
+  videoPath    String?
+  audioPath    String?
+  manifestPath String?
   sizeBytes    BigInt?
   duration     Float?
   expiresAt    DateTime
@@ -111,27 +111,27 @@ model Result {
 }
 
 model YouTubeCredential {
-  id                    String   @id @default(uuid())
+  id                    String    @id @default(uuid())
   sessionId             String
   encryptedAccessToken  String
   encryptedRefreshToken String?
   expiresAt             DateTime
-  createdAt             DateTime @default(now())
+  createdAt             DateTime  @default(now())
   lastUsedAt            DateTime?
-  session               Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session               Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
 }
 
 model ProcessingArtifact {
-  id         String   @id @default(uuid())
+  id          String   @id @default(uuid())
   jobId       String
-  type       String
-  filename   String
+  type        String
+  filename    String
   storagePath String
-  sizeBytes  BigInt?
-  createdAt  DateTime @default(now())
-  job        Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sizeBytes   BigInt?
+  createdAt   DateTime @default(now())
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   @@index([jobId])
 }

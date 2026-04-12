@@ -19,6 +19,11 @@ type JobWithProgress = Prisma.JobGetPayload<{
     include: { progress: true; result: true };
 }>;
 
+function normalizeResultPath(path: string | null) {
+    const trimmed = path?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+}
+
 function validateClipRanges(payload: CreateJobDto) {
     if (payload.startTime >= payload.endTime) {
         throw new BadRequestException("startTime must be less than endTime");
@@ -253,9 +258,9 @@ export class JobsService {
                     resultId: job.result.id,
                     jobId: job.result.jobId,
                     sessionId: job.result.sessionId,
-                    videoPath: job.result.videoPath,
-                    audioPath: job.result.audioPath,
-                    manifestPath: job.result.manifestPath,
+                    videoPath: normalizeResultPath(job.result.videoPath),
+                    audioPath: normalizeResultPath(job.result.audioPath),
+                    manifestPath: normalizeResultPath(job.result.manifestPath),
                     sizeBytes: job.result.sizeBytes?.toString() ?? null,
                     duration: job.result.duration,
                     expiresAt: job.result.expiresAt.toISOString(),

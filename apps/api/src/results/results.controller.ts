@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, Res } from "@nestjs/common";
+import { Controller, Get, NotFoundException, Param, Req, Res } from "@nestjs/common";
 import type { Request } from "express";
 import type { Response } from "express";
 import { SESSION_COOKIE_NAME, type ResultResponse } from "@sermon-clipper/shared";
@@ -30,6 +30,9 @@ export class ResultsController {
     ): Promise<void> {
         const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
         const result = await this.resultsService.getOwnedResultById(session.id, resultId);
+        if (!result.audioPath) {
+            throw new NotFoundException("Audio artifact is not ready yet");
+        }
         response.type("audio/mpeg");
         response.sendFile(result.audioPath);
     }
@@ -42,6 +45,9 @@ export class ResultsController {
     ): Promise<void> {
         const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
         const result = await this.resultsService.getOwnedResultById(session.id, resultId);
+        if (!result.videoPath) {
+            throw new NotFoundException("Video artifact is not ready yet");
+        }
         response.type("video/mp4");
         response.sendFile(result.videoPath);
     }

@@ -118,9 +118,9 @@ export interface ResultResponse {
     resultId: string;
     jobId: string;
     sessionId: string;
-    videoPath: string;
-    audioPath: string;
-    manifestPath: string;
+    videoPath: string | null;
+    audioPath: string | null;
+    manifestPath: string | null;
     sizeBytes: string | null;
     duration: number | null;
     expiresAt: string;

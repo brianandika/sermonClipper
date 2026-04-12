@@ -66,6 +66,7 @@ const outputWidth = 1920;
 const outputHeight = 1080;
 const defaultFps = 30;
 const defaultIntroSampleRate = 44100;
+const pendingArtifactPath = "";
 
 const prisma = new PrismaClient();
 const activeJobControllers = new Map<string, Set<AbortController>>();
@@ -924,6 +925,40 @@ async function processClipJob(payload: ClipProcessJobData) {
         await rm(audioProgramPath, { force: true });
     }
 
+    const audioOutputStats = await stat(outputAudioPath);
+    const partialExpiresAt = new Date();
+    partialExpiresAt.setUTCDate(partialExpiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
+
+    await prisma.$transaction([
+        prisma.result.upsert({
+            where: { jobId: job.id },
+            update: {
+                sessionId: job.sessionId,
+                audioPath: outputAudioPath,
+                videoPath: pendingArtifactPath,
+                manifestPath: pendingArtifactPath,
+                expiresAt: partialExpiresAt,
+            },
+            create: {
+                jobId: job.id,
+                sessionId: job.sessionId,
+                videoPath: pendingArtifactPath,
+                audioPath: outputAudioPath,
+                manifestPath: pendingArtifactPath,
+                expiresAt: partialExpiresAt,
+            },
+        }),
+        prisma.processingArtifact.create({
+            data: {
+                jobId: job.id,
+                type: "audio",
+                filename: basename(outputAudioPath),
+                storagePath: outputAudioPath,
+                sizeBytes: BigInt(audioOutputStats.size),
+            },
+        }),
+    ]);
+
     await assertJobNotCanceled(job.id);
 
         const videoSegmentPaths = [...segmentPaths];
@@ -1075,12 +1110,6 @@ async function processClipJob(payload: ClipProcessJobData) {
                     filename: basename(outputVideoPath),
                     storagePath: outputVideoPath,
                     sizeBytes: BigInt(outputStats.size),
-                },
-                {
-                    jobId: job.id,
-                    type: "audio",
-                    filename: basename(outputAudioPath),
-                    storagePath: outputAudioPath,
                 },
                 {
                     jobId: job.id,

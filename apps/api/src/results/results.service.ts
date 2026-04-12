@@ -2,6 +2,11 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import type { ResultResponse } from "@sermon-clipper/shared";
 import { PrismaService } from "../prisma/prisma.service";
 
+function normalizeResultPath(path: string | null) {
+    const trimmed = path?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+}
+
 @Injectable()
 export class ResultsService {
     constructor(private readonly prisma: PrismaService) { }
@@ -40,9 +45,9 @@ export class ResultsService {
         id: string;
         jobId: string;
         sessionId: string;
-        videoPath: string;
-        audioPath: string;
-        manifestPath: string;
+        videoPath: string | null;
+        audioPath: string | null;
+        manifestPath: string | null;
         sizeBytes: bigint | null;
         duration: number | null;
         expiresAt: Date;
@@ -52,9 +57,9 @@ export class ResultsService {
             resultId: result.id,
             jobId: result.jobId,
             sessionId: result.sessionId,
-            videoPath: result.videoPath,
-            audioPath: result.audioPath,
-            manifestPath: result.manifestPath,
+            videoPath: normalizeResultPath(result.videoPath),
+            audioPath: normalizeResultPath(result.audioPath),
+            manifestPath: normalizeResultPath(result.manifestPath),
             sizeBytes: result.sizeBytes?.toString() ?? null,
             duration: result.duration,
             expiresAt: result.expiresAt.toISOString(),

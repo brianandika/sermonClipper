@@ -328,6 +328,24 @@ body {
   text-decoration: none;
 }
 
+.results-pending-state {
+  border: 1px dashed #cbd5e1;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: #f8fafc;
+}
+
+.results-pending-copy {
+  margin: 0;
+  color: #475569;
+}
+
+.results-pending-status {
+  margin: 0.6rem 0 0;
+  color: #0f172a;
+  font-weight: 600;
+}
+
 .btn {
   background: var(--primary);
   color: white;

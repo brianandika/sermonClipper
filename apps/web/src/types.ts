@@ -82,9 +82,9 @@ export interface Result {
   resultId: string;
   jobId: string;
   sessionId: string;
-  audioPath: string;
-  videoPath: string;
-  manifestPath?: string;
+  audioPath: string | null;
+  videoPath: string | null;
+  manifestPath?: string | null;
   sizeBytes?: string | null;
   duration?: number | null;
   expiresAt: string;

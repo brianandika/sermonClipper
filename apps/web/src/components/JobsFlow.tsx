@@ -152,7 +152,7 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
               const isActiveRow = job.jobId === activeJobId;
               const isOwnedByCurrentSession = currentSessionId !== null && job.sessionId === currentSessionId;
               const canCancel = isOwnedByCurrentSession && ACTIVE_STATUSES.has(job.status);
-              const canOpenResult = isOwnedByCurrentSession && job.status === 'completed' && Boolean(job.result);
+              const canOpenResult = isOwnedByCurrentSession && Boolean(job.result?.audioPath);
               const progressPercent = Math.max(0, Math.min(100, job.progress?.overallProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
               const requestedOutputName = getRequestedOutputName(job);
@@ -195,7 +195,7 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                       ) : null}
                       {canOpenResult ? (
                         <button type="button" className="btn" onClick={() => handleViewResult(job)} disabled={rowBusy} style={{ minWidth: '88px' }}>
-                          {rowBusy ? 'Opening...' : 'View Result'}
+                          {rowBusy ? 'Opening...' : (job.status === 'completed' ? 'View Result' : 'Open Audio')}
                         </button>
                       ) : null}
                       {!canCancel && !canOpenResult ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
