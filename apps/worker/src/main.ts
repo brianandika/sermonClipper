@@ -398,7 +398,7 @@ async function detectMediaProperties(jobId: string, videoPath: string) {
 function getSegmentVideoFilter(fps = defaultFps) {
     return [
         `fps=${fps}`,
-        `scale=${outputWidth}:-2:force_original_aspect_ratio=decrease`,
+        `scale=${outputWidth}:${outputHeight}:force_original_aspect_ratio=decrease`,
         `pad=${outputWidth}:${outputHeight}:(ow-iw)/2:(oh-ih)/2`,
         "format=yuv420p",
     ].join(",");
