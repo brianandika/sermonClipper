@@ -30,10 +30,34 @@ function formatStatus(value: string): string {
     .join(' ');
 }
 
+function ensureExtension(filename: string | undefined, extension: '.mp3' | '.mp4', fallback: string): string {
+  const trimmed = filename?.trim() ?? '';
+  if (!trimmed) {
+    return fallback;
+  }
+
+  const withoutExt = trimmed.replace(/\.[^.]+$/, '');
+  const safeBase = withoutExt.trim() || fallback.replace(/\.[^.]+$/, '');
+  return `${safeBase}${extension}`;
+}
+
+function getRequestedBaseName(job: Job): string | undefined {
+  const source = job.payload.outputAudioFilename ?? job.payload.outputVideoFilename;
+  const trimmed = source?.trim() ?? '';
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed.replace(/\.[^.]+$/, '');
+}
+
 export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const audioUrl = getResultArtifact(result.resultId, 'audio');
   const videoUrl = getResultArtifact(result.resultId, 'video');
   const duration = job.payload.endTime - job.payload.startTime;
+  const requestedBaseName = getRequestedBaseName(job);
+  const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
+  const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
 
   return (
     <div className="container results-page">
@@ -64,7 +88,7 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
             <source src={audioUrl} type="audio/mpeg" />
             Your browser doesn't support audio playback.
           </audio>
-          <a href={audioUrl} download="result.mp3" className="btn results-download-btn">
+          <a href={audioUrl} download={audioDownloadName} className="btn results-download-btn">
             Download Audio
           </a>
         </article>
@@ -78,7 +102,7 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
             <source src={videoUrl} type="video/mp4" />
             Your browser doesn't support video playback.
           </video>
-          <a href={videoUrl} download="result.mp4" className="btn results-download-btn">
+          <a href={videoUrl} download={videoDownloadName} className="btn results-download-btn">
             Download Video
           </a>
         </article>

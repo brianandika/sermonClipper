@@ -70,6 +70,8 @@ export const createJob = async (jobData: {
   endTime: number;
   clipStarts: number[];
   clipEnds: number[];
+  outputAudioFilename?: string;
+  outputVideoFilename?: string;
   introImageAssetId?: string;
   introDuration?: number;
   transitionDuration?: number;

@@ -404,6 +404,24 @@ function getSegmentVideoFilter(fps = defaultFps) {
     ].join(",");
 }
 
+function sanitizeOutputFilename(raw: string | undefined, extension: ".mp3" | ".mp4", fallbackBase: string) {
+    const fallback = `${fallbackBase}${extension}`;
+    const candidate = (raw ?? "").trim();
+    if (!candidate) {
+        return fallback;
+    }
+
+    const withoutExtension = candidate.replace(/\.[^./\\]+$/, "");
+    const normalizedBase = withoutExtension
+        .replace(/[\\/]+/g, "-")
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 120);
+
+    const safeBase = normalizedBase || fallbackBase;
+    return `${safeBase}${extension}`;
+}
+
 function getLoudnormAnalysis(stderr: string) {
     const jsonStart = stderr.lastIndexOf("{");
     const jsonEnd = stderr.lastIndexOf("}");
@@ -805,8 +823,10 @@ async function processClipJob(payload: ClipProcessJobData) {
     const audioProgramPath = join(jobRoot, "audio-program.m4a");
     const videoProgramPath = join(jobRoot, "video-program.mp4");
     const introClipPath = join(jobRoot, "intro-clip.mp4");
-    const outputVideoPath = join(jobRoot, "result.mp4");
-    const outputAudioPath = join(jobRoot, "result.mp3");
+    const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "result-video");
+    const outputAudioFilename = sanitizeOutputFilename(request.outputAudioFilename, ".mp3", "result-audio");
+    const outputVideoPath = join(jobRoot, outputVideoFilename);
+    const outputAudioPath = join(jobRoot, outputAudioFilename);
     const processingManifestPath = join(jobRoot, "manifest.json");
 
     const introImageAsset = request.introImageAssetId

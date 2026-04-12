@@ -39,6 +39,35 @@ function parseTimeInput(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function getBaseFilename(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return 'sermon-clip';
+  }
+
+  const dot = trimmed.lastIndexOf('.');
+  if (dot <= 0) {
+    return trimmed;
+  }
+
+  return trimmed.slice(0, dot);
+}
+
+function toSafeBaseFilename(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 'sermon-clip';
+  }
+
+  const withoutExtension = trimmed.replace(/\.[^.]+$/, '');
+  const sanitized = withoutExtension
+    .replace(/[\\/]+/g, '-')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return sanitized || 'sermon-clip';
+}
+
 export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowProps) {
   const assetDuration = asset.duration ?? 0;
   const [resolvedDuration, setResolvedDuration] = useState(Math.max(0, assetDuration));
@@ -55,6 +84,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
   const [coverImageAssetId, setCoverImageAssetId] = useState<string | null>(null);
   const [coverImageUploading, setCoverImageUploading] = useState(false);
+  const [outputBaseFilename, setOutputBaseFilename] = useState(() => getBaseFilename(asset.originalFilename));
   const [playbackSpeedIndex, setPlaybackSpeedIndex] = useState(DEFAULT_PLAYBACK_INDEX);
   const [submittingJob, setSubmittingJob] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +170,11 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
       }
     };
   }, [asset.assetId]);
+
+  useEffect(() => {
+    const base = getBaseFilename(asset.originalFilename);
+    setOutputBaseFilename(base);
+  }, [asset.originalFilename]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -331,6 +366,10 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
       issues.push('End time must be within the video duration.');
     }
 
+    if (!outputBaseFilename.trim()) {
+      issues.push('Output filename is required.');
+    }
+
     const sorted = [...clips]
       .filter((clip) => clip.start > 0 || clip.end > 0)
       .sort((a, b) => a.start - b.start);
@@ -398,6 +437,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
     try {
       const { starts, ends } = toCutRanges();
       const introImageAssetId = await uploadCoverImage();
+      const baseOutputFilename = toSafeBaseFilename(outputBaseFilename);
 
       const job = await createJob({
         assetId: asset.assetId,
@@ -405,6 +445,8 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         endTime,
         clipStarts: starts,
         clipEnds: ends,
+        outputAudioFilename: `${baseOutputFilename}.mp3`,
+        outputVideoFilename: `${baseOutputFilename}.mp4`,
         introImageAssetId: introImageAssetId ?? undefined,
         introDuration: introImageAssetId ? 5 : undefined,
         transitionDuration: 1,
@@ -593,6 +635,18 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
           }}
         />
         {coverImageUploading ? <span>Uploading cover...</span> : null}
+      </div>
+
+      <div className="grid" style={{ width: '100%', marginBottom: '1rem', gap: '0.75rem' }}>
+        <label htmlFor="output_name">Output filename:</label>
+        <input
+          id="output_name"
+          type="text"
+          value={outputBaseFilename}
+          onChange={(e) => setOutputBaseFilename(e.target.value)}
+          placeholder="sermon-clip"
+        />
+        <small style={{ color: '#64748b' }}>This name is used for both downloads: .mp3 and .mp4.</small>
       </div>
 
       <div className="hardware-selection">

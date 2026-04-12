@@ -56,6 +56,8 @@ export interface Job {
     endTime: number;
     clipStarts?: number[];
     clipEnds?: number[];
+    outputAudioFilename?: string;
+    outputVideoFilename?: string;
     introImageAssetId?: string;
     introDuration?: number;
     transitionDuration?: number;
@@ -82,6 +84,9 @@ export interface Result {
   sessionId: string;
   audioPath: string;
   videoPath: string;
+  manifestPath?: string;
+  sizeBytes?: string | null;
+  duration?: number | null;
   expiresAt: string;
   createdAt: string;
 }

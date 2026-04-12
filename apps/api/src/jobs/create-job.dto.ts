@@ -3,6 +3,7 @@ import {
     ArrayMinSize,
     IsArray,
     IsEnum,
+    IsNotEmpty,
     IsNumber,
     IsOptional,
     IsString,
@@ -17,6 +18,16 @@ export class CreateJobDto {
     @IsOptional()
     @IsString()
     introImageAssetId?: string;
+
+    @IsOptional()
+    @IsString()
+    @IsNotEmpty()
+    outputAudioFilename?: string;
+
+    @IsOptional()
+    @IsString()
+    @IsNotEmpty()
+    outputVideoFilename?: string;
 
     @IsOptional()
     @Type(() => Number)

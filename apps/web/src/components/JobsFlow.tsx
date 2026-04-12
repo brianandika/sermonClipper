@@ -27,6 +27,17 @@ function formatStatus(value: string) {
   return value.split('_').join(' ');
 }
 
+function getRequestedOutputName(job: Job) {
+  const rawName = job.payload.outputAudioFilename ?? job.payload.outputVideoFilename ?? '';
+  const trimmed = rawName.trim();
+
+  if (!trimmed) {
+    return 'result';
+  }
+
+  return trimmed.replace(/\.[^.]+$/, '');
+}
+
 export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onReset }: JobsFlowProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
@@ -144,6 +155,7 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
               const canOpenResult = isOwnedByCurrentSession && job.status === 'completed' && Boolean(job.result);
               const progressPercent = Math.max(0, Math.min(100, job.progress?.overallProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
+              const requestedOutputName = getRequestedOutputName(job);
 
               return (
                 <tr key={job.jobId} style={{ background: isActiveRow ? 'rgba(37, 99, 235, 0.06)' : 'transparent' }}>
@@ -169,7 +181,10 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                     {job.progress?.message ?? job.failureReason ?? (TERMINAL_STATUSES.has(job.status) ? 'No active progress' : 'Queued')}
                   </td>
                   <td style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0', verticalAlign: 'top', fontSize: '0.875rem' }}>
-                    {formatDate(job.createdAt)}
+                    <div>{formatDate(job.createdAt)}</div>
+                    <div style={{ marginTop: '0.35rem', color: '#64748b', overflowWrap: 'anywhere' }}>
+                      Output: {requestedOutputName}
+                    </div>
                   </td>
                   <td style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0', verticalAlign: 'top' }}>
                     <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-start' }}>

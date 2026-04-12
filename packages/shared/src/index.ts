@@ -78,6 +78,8 @@ export interface CreateJobRequest {
     endTime: number;
     clipStarts?: number[];
     clipEnds?: number[];
+    outputAudioFilename?: string;
+    outputVideoFilename?: string;
     introImageAssetId?: string;
     introDuration?: number;
     transitionDuration?: number;
