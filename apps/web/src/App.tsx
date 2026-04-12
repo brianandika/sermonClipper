@@ -194,7 +194,7 @@ function App() {
           <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onReset={handleReset} />
         )}
         {flow === 'results' && result && job && (
-          <ResultsFlow result={result} job={job} onReset={handleReset} />
+          <ResultsFlow result={result} job={job} />
         )}
       </div>
 
