@@ -1,281 +1,243 @@
-# VM sermon video processing
+# Sermon Clipper
 
-This repository currently contains the original Flask application and the in-progress replacement platform.
+Sermon Clipper is a monorepo for clipping sermon videos into downloadable MP3 and MP4 outputs.
 
-- Legacy app: Flask upload and clipping flow in [app.py](app.py)
-- New platform foundation: NestJS API, worker runtime, Prisma schema, and local Docker infrastructure
+The current platform includes:
 
-The current implementation phase is focused on scaffolding the new backend without breaking the existing Flask workflow.
+- a React + Vite web editor for upload, trimming, queue monitoring, and results
+- a NestJS API for sessions, assets, jobs, and results
+- a BullMQ worker that runs the FFmpeg processing pipeline
+- Prisma + PostgreSQL for persistence
+- Redis for queueing
 
-## Installation
+The legacy Flask app is still present in this repository, but the active product work is centered on the TypeScript platform under `apps/`.
 
-### Prerequisites
+## What The App Does
 
-- Python 3.6 or higher
-- `ffmpeg` installed and available in your system's PATH
+The current flow is:
 
-### Steps
+1. Upload a source video.
+2. Open the editor and choose the portion of the source to keep.
+3. Optionally cut out internal sections, add a still-image intro, and choose an output filename.
+4. Submit the job to the processing queue.
+5. Watch queue progress in the Jobs page.
+6. Open the Results page as soon as the MP3 is ready.
+7. Stay on the Results page while it auto-refreshes until the MP4 is ready.
 
-1. Clone the repository:
+## Architecture
 
-   ```sh
-   git clone https://github.com/yourusername/videoclipper.git
-   cd videoclipper
-   ```
-
-2. Create and activate a virtual environment:
-
-   ```sh
-   python -m venv venv
-   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-   ```
-
-3. Install the required Python libraries:
-
-   ```sh
-   pip install -r requirements.txt
-   ```
-
-4. Run the application:
-
-   ```sh
-   python app.py
-   ```
-
-5. Open your web browser and go to [http://127.0.0.1:5000](http://127.0.0.1:5000) to use the application.
-
-## New Platform Foundation
-
-The new implementation lives alongside the Flask app and uses a monorepo layout:
-
+- `apps/web`: React frontend for upload, editing, jobs, and results
 - `apps/api`: NestJS HTTP API
-- `apps/worker`: background worker runtime for queues and FFmpeg jobs
-- `apps/web`: placeholder for the React + Vite frontend
-- `packages/shared`: shared backend/frontend types and constants
-- `prisma`: PostgreSQL schema
-- `docker-compose.yml`: main container stack for PostgreSQL, Redis, API, and worker
-- `.devcontainer`: VS Code development container configuration
+- `apps/worker`: BullMQ worker and FFmpeg processing runtime
+- `packages/shared`: shared request/response types and constants
+- `prisma`: Prisma schema and generated client inputs
+- `docker-compose.yml`: local stack for PostgreSQL, Redis, API, and worker
+- `.devcontainer`: VS Code dev container support
+- `app.py`: legacy Flask app
 
-### Initial setup for the new platform
+## Processing Behavior
 
-1. Install Node dependencies:
+Each job currently produces:
 
-   ```sh
-   npm install
-   ```
+- one MP3 audio artifact
+- one MP4 video artifact
 
-2. Create a root `.env` file from the example below:
+The worker processes audio first and publishes the result early, so users can download the MP3 while the MP4 is still encoding.
 
-   ```env
-   DATABASE_URL=postgresql://sermon_clipper:sermon_clipper@localhost:5432/sermon_clipper?schema=public
-   REDIS_URL=redis://localhost:6379
-   API_PORT=3000
-   SESSION_TTL_DAYS=7
-   RESULT_TTL_DAYS=7
-   WORKER_MODE=all
-   CPU_WORKER_CONCURRENCY=2
-   GPU_WORKER_CONCURRENCY=1
-   ```
+Current processing rules:
+
+- `startTime` and `endTime` define the main source span to keep.
+- `clipStarts` and `clipEnds` define internal cut ranges inside that span.
+- the remaining segments are stitched together in order
+- the audio output is normalized after stitching
+- the video output is normalized after stitching and video rendering
+- a still intro image, when provided, is only inserted into the video pipeline
+
+## Prerequisites
+
+For local development outside Docker:
+
+- Node.js and npm
+- PostgreSQL
+- Redis
+- `ffmpeg` and `ffprobe` available on `PATH`
+
+For containerized development:
+
+- Docker
+- Docker Compose
+
+## Environment Variables
+
+Copy [/.env.example](/workspaces/sermonClipper/.env.example) to `/.env` before running the app.
+
+### Core Connectivity
+
+- `DATABASE_URL`: PostgreSQL connection string used by API and worker.
+- `REDIS_URL`: Redis connection string used for BullMQ queues.
+- `API_PORT`: port used by the Nest API in local host runs.
+
+### Retention And Cleanup
+
+- `SESSION_TTL_DAYS`: number of days before inactive sessions expire.
+- `RESULT_TTL_DAYS`: number of days result records remain valid.
+- `ASSET_TTL_DAYS`: number of days unused assets can remain before cleanup removes them.
+  If omitted, it falls back to `SESSION_TTL_DAYS`.
+- `JOB_TTL_DAYS`: number of days completed, failed, canceled, or expired jobs are kept before cleanup removes them.
+  If omitted, it falls back to `RESULT_TTL_DAYS`.
+- `CLEANUP_INTERVAL_MINUTES`: how often the API cleanup service scans for expired sessions, old jobs, and stale assets.
+
+### Media And Working Files
+
+- `WORK_ROOT`: root directory where uploaded assets, intermediate job files, and results are stored.
+- `FFMPEG_PATH`: path or executable name for `ffmpeg`.
+- `FFPROBE_PATH`: path or executable name for `ffprobe`.
+
+### Worker Settings
+
+- `WORKER_MODE`: which queue set the worker should serve. The normal value is `all`.
+- `CPU_WORKER_CONCURRENCY`: maximum concurrent CPU-oriented jobs.
+- `GPU_WORKER_CONCURRENCY`: maximum concurrent GPU encode jobs.
+
+## Example `.env`
+
+```env
+DATABASE_URL=postgresql://sermon_clipper:sermon_clipper@localhost:5432/sermon_clipper?schema=public
+REDIS_URL=redis://localhost:6379
+API_PORT=3000
+SESSION_TTL_DAYS=90
+RESULT_TTL_DAYS=90
+ASSET_TTL_DAYS=90
+JOB_TTL_DAYS=90
+CLEANUP_INTERVAL_MINUTES=60
+WORK_ROOT=/workspaces/sermonClipper/work
+FFMPEG_PATH=ffmpeg
+FFPROBE_PATH=ffprobe
+WORKER_MODE=all
+CPU_WORKER_CONCURRENCY=2
+GPU_WORKER_CONCURRENCY=1
+```
+
+## Local Development
+
+1. Install dependencies:
+
+```sh
+npm install
+```
+
+2. Copy the example environment file:
+
+```sh
+cp .env.example .env
+```
 
 3. Start PostgreSQL and Redis:
 
-   ```sh
-   docker compose up -d postgres redis
-   ```
+```sh
+docker compose up -d postgres redis
+```
 
 4. Generate the Prisma client:
 
-   ```sh
-   npm run prisma:generate
-   ```
-
-5. Start the API foundation:
-
-   ```sh
-   npm run dev:api
-   ```
-
-6. In a separate terminal, start the worker foundation:
-
-   ```sh
-   npm run dev:worker
-   ```
-
-At this stage, the new API exposes `/health`, `/sessions/bootstrap`, asset upload, job creation/status, and result lookup. The worker now uses two execution lanes:
-
-- `clip-process`: CPU-oriented jobs that can run concurrently
-- `gpu-encode`: serialized NVENC-backed jobs; `auto` is routed here only when local FFmpeg hardware detection resolves to `cuda`
-
-If NVENC is not available, `auto` falls back to the CPU lane. This keeps CPU throughput moving without allowing multiple NVENC-backed jobs to overlap.
-
-The worker now follows the legacy Flask artifact flow more closely by rendering the audio artifact and the video artifact as separate pipelines, each with its own final normalization pass.
-
-Current processing contract:
-
-- Input video asset plus `startTime` and `endTime` defines the full source span to keep.
-- Optional `clipStarts` and `clipEnds` define cut-out ranges inside that span. The worker stitches the remaining ranges together in order.
-- The worker outputs two normalized artifacts for every job: a stitched video-with-audio MP4 file and a stitched audio-only MP3 file.
-- The audio artifact follows the Flask audio path: stitched kept segments, 1 second audio crossfades between kept segments, fade in/out on the stitched program, then loudness normalization.
-- The video artifact follows the Flask video path: stitched kept segments, 0.5 second crossfades between video segments, fade in/out on the full video timeline, then loudness normalization of the video audio track.
-- The worker uses the resolved hardware encoder for video segment rendering and final video rendering instead of hardcoding CPU-only x264 settings.
-- When `introImageAssetId` is provided, a still-image clip is inserted only into the video pipeline. The video fades in on the still image, crossfades from the still image into the first kept video segment, and still fades out at the end. The audio-only MP3 artifact does not include intro silence.
-
-## Quick Start With Docker Compose
-
-The repository now includes a root [docker-compose.yml](docker-compose.yml) for the new platform stack.
-
-This stack starts:
-
-- PostgreSQL
-- Redis
-- Nest API on port `3000`
-- Worker runtime for clip jobs
-
-Quick start:
-
-1. Copy `.env.example` to `.env`.
-2. Run:
-
-   ```sh
-   docker compose up --build
-   ```
-
-3. Wait for the API to boot, then open `http://localhost:3000/health`.
-
-Notes:
-
-- The API and worker containers share a persistent `work` volume for generated artifacts.
-- The compose stack currently runs the new backend platform. It does not yet launch a production frontend because the React app is still scaffold-only.
-- Both API and worker run `prisma db push` on startup so the database schema is created automatically for local use.
-
-## Recommended Workflows
-
-Use the dev container for feature development:
-
-- Start the VS Code dev container.
-- The dev container starts `workspace`, `postgres`, and `redis`.
-- Run the app manually inside `workspace` for fast iteration:
-
-  ```sh
-  npm run dev:api
-  npm run dev:worker
-  ```
-
-Use the full compose stack for integration checks:
-
-- Start `postgres`, `redis`, `api`, and `worker` with:
-
-  ```sh
-  docker compose up -d --build
-  ```
-
-- Use this when you want to validate the actual containerized runtime instead of the interactive development workflow.
-
-## Project Structure
-
-- `app.py`: Main application file
-- `apps/api`: New NestJS API foundation
-- `apps/worker`: New worker foundation
-- `packages/shared`: Shared TypeScript contracts
-- `prisma/schema.prisma`: New backend data model
-- `docker-compose.yml`: Main stack for PostgreSQL, Redis, API, and worker
-- `.devcontainer`: Workspace container configuration for VS Code development
-- `templates`: HTML templates for the web pages
-  - `index.html`: Upload page
-  - `process.html`: Video processing page
-  - `result.html`: Result page
-- `uploads`: Directory for uploaded files
-- `processed`: Directory for processed files
-
-## Dependencies
-
-- Flask
-- ffmpeg-python
-- google-auth-oauthlib
-- google-auth-httplib2
-- google-api-python-client
-- python-dotenv
-- NestJS
-- Prisma
-- BullMQ
-- Redis
-- PostgreSQL
-
-## Using the Dev Container
-
-This repository can be developed inside a VS Code Dev Container to ensure a consistent environment (Node, Python, FFmpeg, Docker CLI, PostgreSQL client, Redis CLI, and project dependencies).
-
-Prerequisites:
-
-- VS Code
-- the "Dev Containers" extension (ms-vscode-remote.remote-containers)
-
-Open the project in a dev container:
-
-1. In VS Code open the Command Palette and run **Remote-Containers: Reopen in Container** (or **Dev Containers: Open Folder in Container**).
-2. Wait for the container to build and start. The first build may take a few minutes.
-
-The dev container starts these services:
-
-- `workspace`: your interactive development environment
-- `postgres`: local database for development
-- `redis`: local queue/cache backend for development
-
-The `api` and `worker` containers are intentionally not started by the dev container. During normal development, run them manually inside `workspace` so you get live reload, better stack traces, and easier debugging.
-
-Working inside the container:
-
-- The project contains a Python virtual environment at `venv` (created for local runs).
-
-Because virtual environments include system-specific paths and binaries, you should recreate the `venv` inside the dev container instead of reusing a host-created `venv`.
-
-To recreate and activate the virtual environment inside the container:
-
-```bash
-rm -rf venv  # optional: remove the host-created venv first
-python -m venv venv
-source venv/bin/activate
+```sh
+npm run prisma:generate
 ```
 
-If the integrated terminal in VS Code auto-activates a virtual environment, verify it points to a container-local `venv` (not a host path).
+5. Start the API:
 
-- The post-create step now does the following automatically:
-
-- copies `.env.example` to `.env` when missing
-- runs `npm ci`
-- runs `npm run prisma:generate`
-- recreates `venv`
-- installs `requirements.txt`
-
-- Install Python dependencies manually only if you need to refresh them after changing `requirements.txt`:
-
-```bash
-pip install -r requirements.txt
-```
-
-- `ffmpeg`, `psql`, `redis-cli`, and Docker tooling are installed in the dev container image.
-
-Run the application inside `workspace`:
-
-```bash
+```sh
 npm run dev:api
+```
+
+6. Start the worker in a separate terminal:
+
+```sh
 npm run dev:worker
 ```
 
-Run the legacy Flask app if needed:
+7. Start the web app in a third terminal:
 
-```bash
-python app.py
+```sh
+npm run dev:web
 ```
 
-Open your browser to http://127.0.0.1:5000. When running in the dev container, accept any prompt to forward the port from the container to the host.
+## Docker Compose
 
-Rebuilding or updating the container:
+The root [docker-compose.yml](/workspaces/sermonClipper/docker-compose.yml) runs:
 
-- If you change devcontainer configuration, rebuild with **Dev Containers: Rebuild Container** from the Command Palette.
+- PostgreSQL
+- Redis
+- API
+- worker
+
+Start everything with:
+
+```sh
+docker compose up --build
+```
 
 Notes:
 
-- The integrated terminal in VS Code may automatically activate the virtual environment for you. If it doesn't, run `source venv/bin/activate`.
-- If you want to validate the full containerized stack, use `docker compose up -d --build` from the repository root.
-- If you prefer not to use the dev container, the normal local setup in this README still applies.
+- inside Docker, `WORK_ROOT` is overridden to `/app/work`
+- API and worker share the same persistent work volume
+- API and worker both run `prisma db push` on startup in the compose stack
+
+## Build Commands
+
+Build the full monorepo:
+
+```sh
+npm run build
+```
+
+Build individual packages:
+
+```sh
+npm run build --workspace @sermon-clipper/api
+npm run build --workspace @sermon-clipper/worker
+npm run build --workspace @sermon-clipper/web
+```
+
+## Queue And Results Behavior
+
+The Jobs page shows all jobs in the queue.
+
+- processing and queued jobs show progress
+- users can cancel only their own jobs
+- users can open the result page as soon as audio is available
+- the results page polls automatically until the MP4 is ready
+
+## Automatic Cleanup
+
+Generated data is stored under `WORK_ROOT`.
+
+The API runs a periodic cleanup service that removes:
+
+- expired sessions and their directories
+- old terminal jobs and their job directories
+- stale assets with no remaining job references
+
+This keeps the `work` directory from growing without bound.
+
+## Legacy Flask App
+
+The repository still contains the older Flask implementation in [app.py](/workspaces/sermonClipper/app.py).
+
+That code remains useful for reference, but the current product work is centered on the monorepo under `apps/`.
+
+## Dev Container
+
+The repository includes a VS Code dev container for a consistent development environment.
+
+Typical flow inside the dev container:
+
+```sh
+npm install
+npm run prisma:generate
+npm run dev:api
+npm run dev:worker
+npm run dev:web
+```
+
+The dev container is the easiest way to get matching versions of Node, Python, FFmpeg, PostgreSQL tooling, and Redis tooling.
