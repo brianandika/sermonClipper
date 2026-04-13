@@ -10,4 +10,5 @@ export const env = {
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
     ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
     ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
+    uploadMaxBytes: Number.parseInt(process.env.UPLOAD_MAX_BYTES ?? "53687091200", 10),
 };

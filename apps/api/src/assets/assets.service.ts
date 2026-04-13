@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import type { Asset } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { Express } from "express";
 import { env } from "../config/env";
@@ -28,7 +28,12 @@ export class AssetsService {
         const sourcePath = join(assetDir, sourceFilename);
 
         await mkdir(assetDir, { recursive: true });
-        await writeFile(sourcePath, file.buffer);
+        if (file.path) {
+            await rename(file.path, sourcePath);
+        }
+        else {
+            await writeFile(sourcePath, file.buffer);
+        }
 
         return this.prisma.asset.create({
             data: {

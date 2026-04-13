@@ -94,6 +94,7 @@ Copy [/.env.example](/workspaces/sermonClipper/.env.example) to `/.env` before r
 - `WORK_ROOT`: root directory where uploaded assets, intermediate job files, and results are stored.
 - `FFMPEG_PATH`: path or executable name for `ffmpeg`.
 - `FFPROBE_PATH`: path or executable name for `ffprobe`.
+- `UPLOAD_MAX_BYTES`: maximum allowed upload size in bytes (default `53687091200`, 50 GiB).
 
 ### Worker Settings
 
@@ -115,6 +116,7 @@ CLEANUP_INTERVAL_MINUTES=60
 WORK_ROOT=/workspaces/sermonClipper/work
 FFMPEG_PATH=ffmpeg
 FFPROBE_PATH=ffprobe
+UPLOAD_MAX_BYTES=53687091200
 WORKER_MODE=all
 CPU_WORKER_CONCURRENCY=2
 GPU_WORKER_CONCURRENCY=1
@@ -217,6 +219,8 @@ Notes:
 - Redis data is bind-mounted to `./data/redis`
 - API and worker both run `prisma db push` on startup in the compose stack
 - on first startup, `/api` calls through Nginx may briefly return `502` until the API finishes booting
+- Nginx upload proxy limit is set to `50g`, and API upload limit defaults to `50 GiB` via `UPLOAD_MAX_BYTES`
+- API uploads are written to disk under `WORK_ROOT/_upload_tmp` before being moved into asset storage, so large uploads do not require buffering the full file in memory
 
 ### One-Command Start/Stop Scripts (No npm Required)
 

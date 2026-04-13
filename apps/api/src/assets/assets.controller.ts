@@ -10,7 +10,10 @@ import {
     UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { memoryStorage } from "multer";
+import { diskStorage } from "multer";
+import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { extname, join } from "node:path";
 import type { Request, Response } from "express";
 import {
     SESSION_COOKIE_NAME,
@@ -21,6 +24,19 @@ import { env } from "../config/env";
 import { SessionService } from "../sessions/session.service";
 import { AssetMediaService } from "./asset-media.service";
 import { AssetsService } from "./assets.service";
+
+const uploadTempDir = join(env.workRoot, "_upload_tmp");
+
+const uploadStorage = diskStorage({
+    destination: (_request, _file, callback) => {
+        mkdirSync(uploadTempDir, { recursive: true });
+        callback(null, uploadTempDir);
+    },
+    filename: (_request, file, callback) => {
+        const extension = extname(file.originalname || "") || ".bin";
+        callback(null, `${randomUUID()}${extension}`);
+    },
+});
 
 @Controller("assets")
 export class AssetsController {
@@ -76,7 +92,12 @@ export class AssetsController {
     }
 
     @Post("upload")
-    @UseInterceptors(FileInterceptor("file", { storage: memoryStorage() }))
+    @UseInterceptors(FileInterceptor("file", {
+        storage: uploadStorage,
+        limits: {
+            fileSize: env.uploadMaxBytes,
+        },
+    }))
     async upload(
         @Req() request: Request,
         @Res({ passthrough: true }) response: Response,
