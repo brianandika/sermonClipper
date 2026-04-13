@@ -21,6 +21,33 @@ interface HardwareCapabilities {
 export class JobHardwareService {
     private capabilityPromise: Promise<Set<HardwareOption>> | null = null;
 
+    private async canUseNvencEncoder() {
+        try {
+            await execFileAsync(env.ffmpegPath, [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1920x1080:rate=30",
+                "-frames:v",
+                "1",
+                "-an",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ]);
+
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+
     async resolve(requestedHardware: HardwareOption): Promise<HardwareResolution> {
         const availableHardware = await this.getAvailableHardware();
         const effectiveHardware = this.resolveEffectiveHardware(requestedHardware, availableHardware);
@@ -61,8 +88,11 @@ export class JobHardwareService {
             const hwaccels = hwaccelsStdout.toLowerCase();
             const encoders = encodersStdout.toLowerCase();
 
-            if (hwaccels.includes("cuda") && encoders.includes("h264_nvenc")) {
-                available.add(HardwareOption.cuda);
+            if (encoders.includes("h264_nvenc")) {
+                const nvencReady = await this.canUseNvencEncoder();
+                if (nvencReady) {
+                    available.add(HardwareOption.cuda);
+                }
             }
 
             if (hwaccels.includes("qsv") && encoders.includes("h264_qsv")) {

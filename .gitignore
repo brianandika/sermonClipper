@@ -9,3 +9,5 @@ dist/
 work/
 *.log
 *.tsbuildinfo
+backups/
+data/

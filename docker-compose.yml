@@ -11,10 +11,32 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sermon_clipper -d sermon_clipper"]
+      test: [ "CMD-SHELL", "pg_isready -U sermon_clipper -d sermon_clipper" ]
       interval: 5s
       timeout: 5s
       retries: 20
+
+  postgres-backup:
+    image: postgres:16
+    restart: unless-stopped
+    stop_grace_period: 2m
+    env_file:
+      - .env
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: sermon_clipper
+      PGPASSWORD: sermon_clipper
+      PGDATABASE: sermon_clipper
+      BACKUP_INTERVAL_SECONDS: "600"
+      BACKUP_RETENTION_MINUTES: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backups/postgres:/backups
+      - ./scripts/postgres-backup-loop.sh:/usr/local/bin/postgres-backup-loop.sh:ro
+    command: [ "sh", "/usr/local/bin/postgres-backup-loop.sh" ]
 
   redis:
     image: redis:7
@@ -22,9 +44,9 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - ./data/redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -33,6 +55,7 @@ services:
     build:
       context: .
       dockerfile: infra/app.Dockerfile
+    gpus: all
     restart: unless-stopped
     env_file:
       - .env
@@ -41,6 +64,8 @@ services:
       REDIS_URL: redis://redis:6379
       API_PORT: "3000"
       WORK_ROOT: /app/work
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,7 +74,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - work_data:/app/work
+      - ./work:/app/work
     command: >
       sh -lc "npx prisma db push --schema prisma/schema.prisma && npm run start --workspace @sermon-clipper/api"
 
@@ -57,6 +82,7 @@ services:
     build:
       context: .
       dockerfile: infra/app.Dockerfile
+    gpus: all
     restart: unless-stopped
     env_file:
       - .env
@@ -66,17 +92,28 @@ services:
       WORK_ROOT: /app/work
       WORKER_MODE: all
       GPU_WORKER_CONCURRENCY: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - work_data:/app/work
+      - ./work:/app/work
     command: >
       sh -lc "npx prisma db push --schema prisma/schema.prisma && npm run start --workspace @sermon-clipper/worker"
 
+  web:
+    build:
+      context: .
+      dockerfile: infra/web.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "5173:80"
+
 volumes:
   postgres_data:
-  redis_data:
-  work_data:

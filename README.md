@@ -31,7 +31,7 @@ The current flow is:
 - `apps/worker`: BullMQ worker and FFmpeg processing runtime
 - `packages/shared`: shared request/response types and constants
 - `prisma`: Prisma schema and generated client inputs
-- `docker-compose.yml`: local stack for PostgreSQL, Redis, API, and worker
+- `docker-compose.yml`: local stack for PostgreSQL, Redis, API, worker, and web (Nginx)
 - `.devcontainer`: VS Code dev container support
 - `app.py`: legacy Flask app
 
@@ -86,6 +86,8 @@ Copy [/.env.example](/workspaces/sermonClipper/.env.example) to `/.env` before r
 - `JOB_TTL_DAYS`: number of days completed, failed, canceled, or expired jobs are kept before cleanup removes them.
   If omitted, it falls back to `RESULT_TTL_DAYS`.
 - `CLEANUP_INTERVAL_MINUTES`: how often the API cleanup service scans for expired sessions, old jobs, and stale assets.
+- `BACKUP_INTERVAL_SECONDS`: how often the `postgres-backup` service creates a new SQL dump backup.
+- `BACKUP_RETENTION_MINUTES`: how long to keep old SQL dump backups before deletion.
 
 ### Media And Working Files
 
@@ -116,6 +118,8 @@ FFPROBE_PATH=ffprobe
 WORKER_MODE=all
 CPU_WORKER_CONCURRENCY=2
 GPU_WORKER_CONCURRENCY=1
+BACKUP_INTERVAL_SECONDS=600
+BACKUP_RETENTION_MINUTES=60
 ```
 
 ## Local Development
@@ -170,6 +174,7 @@ The root [docker-compose.yml](/workspaces/sermonClipper/docker-compose.yml) runs
 - Redis
 - API
 - worker
+- web (Nginx serving the built React app)
 
 Start everything with:
 
@@ -177,11 +182,142 @@ Start everything with:
 docker compose up --build
 ```
 
+Run detached:
+
+```sh
+docker compose up --build -d
+```
+
+Host endpoints:
+
+- Web UI: `http://localhost:5173`
+- API direct: `http://localhost:3000`
+- API through web proxy: `http://localhost:5173/api/...`
+
+The web container serves the production frontend build and proxies `/api/*` to the API container.
+This keeps frontend and backend on one origin (`localhost:5173`) for browser usage.
+
+Stop the stack:
+
+```sh
+docker compose down
+```
+
+Stop and remove volumes:
+
+```sh
+docker compose down -v
+```
+
 Notes:
 
 - inside Docker, `WORK_ROOT` is overridden to `/app/work`
-- API and worker share the same persistent work volume
+- API and worker share `./work` on the host as a bind mount (assets/jobs are directly visible on disk)
+- PostgreSQL data is periodically backed up into `./backups/postgres` on the host by the `postgres-backup` service, but the live database uses a Docker named volume for reliability on Windows filesystems
+- Redis data is bind-mounted to `./data/redis`
 - API and worker both run `prisma db push` on startup in the compose stack
+- on first startup, `/api` calls through Nginx may briefly return `502` until the API finishes booting
+
+### One-Command Start/Stop Scripts (No npm Required)
+
+If you only want Docker/Compose on the host (no `npm`/`npx`), use the control scripts in `scripts/`.
+
+Windows (Command Prompt or PowerShell):
+
+```bat
+scripts\stack-control.bat start
+scripts\stack-control.bat stop
+scripts\stack-control.bat status
+scripts\stack-control.bat logs
+```
+
+macOS/Linux/WSL:
+
+```sh
+chmod +x ./scripts/stack-control.sh
+./scripts/stack-control.sh start
+./scripts/stack-control.sh stop
+./scripts/stack-control.sh status
+./scripts/stack-control.sh logs
+```
+
+Optional flags:
+
+- `--no-build`: skip rebuilding images on `start`/`restart`
+- `--volumes`: remove compose volumes on `stop`
+- `--skip-backup`: skip automatic Postgres backup before `stop`/`restart`
+
+The scripts print both localhost and LAN URLs after startup so other computers on your network can open the UI.
+If other computers cannot connect, allow inbound TCP ports `5173` and `3000` in your host firewall.
+
+Database backup commands:
+
+```bat
+scripts\stack-control.bat backup
+```
+
+```sh
+./scripts/stack-control.sh backup
+```
+
+By default, `stop` and `restart` run an automatic timestamped Postgres backup into `./backups/postgres` before shutting down.
+
+Periodic Docker backup service:
+
+- `postgres-backup` runs continuously in Docker Compose and creates recurring SQL dumps in `./backups/postgres`.
+- Configure schedule with `BACKUP_INTERVAL_SECONDS` (default `600`, every 10 minutes).
+- Configure retention with `BACKUP_RETENTION_MINUTES` (default `60`, keep the previous hour).
+- On graceful container stop (including normal OS shutdown where Docker stops services), it runs one final backup before exit.
+- Unexpected hard power loss cannot be guaranteed to run a final backup, so periodic backups remain the primary protection.
+
+### Auto-Start On Boot
+
+Use the autostart wrappers for boot tasks. They intentionally run `start --no-build` for faster, more reliable startup.
+
+Windows:
+
+```bat
+scripts\stack-autostart.bat
+```
+
+Recommended Task Scheduler setup:
+
+- Trigger: `At startup` (or `At log on`)
+- Program/script: `cmd.exe`
+- Add arguments: `/c "C:\Users\brian\Documents\Projects\sermonClipper\scripts\stack-autostart.bat"`
+- Start in: `C:\Users\brian\Documents\Projects\sermonClipper`
+- Enable `Run with highest privileges`
+
+Linux/macOS/WSL (cron `@reboot`, systemd user service, etc.):
+
+```sh
+chmod +x ./scripts/stack-autostart.sh
+./scripts/stack-autostart.sh
+```
+
+`--no-build` vs build behavior:
+
+- `start --no-build`: starts quickly from existing images; best for reboot/autostart
+- `start` (default): rebuilds images first; use after code/dependency changes
+
+Important data note:
+
+- Current setup stores processing files in `./work` on the host.
+- Redis stores data in `./data/redis` on the host.
+- PostgreSQL uses the `postgres_data` Docker named volume for reliability on Windows filesystems.
+- `docker compose down -v` removes named volumes (including PostgreSQL data), so do not use it unless you intend to reset the database.
+- Docker Compose auto-creates missing bind-mount directories (for example `./work`, `./data/redis`, `./backups/postgres`) on startup.
+- If you previously used the old `work_data` volume, copy it once into `./work`:
+
+```sh
+docker run --rm -v sermonclipper_work_data:/from -v "$(pwd)/work:/to" alpine sh -lc "cp -a /from/. /to/"
+```
+
+- If you previously used old named volume data for Redis, migrate once into the host folder:
+
+```sh
+docker run --rm -v sermonclipper_redis_data:/from -v "$(pwd)/data/redis:/to" alpine sh -lc "cp -a /from/. /to/"
+```
 
 ## Build Commands
 

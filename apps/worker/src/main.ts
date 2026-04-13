@@ -49,7 +49,7 @@ interface FfprobeMediaResponse {
 }
 
 const runtimeEnv = {
-    workerMode: process.env.WORKER_MODE ?? "all",
+    workerMode: (process.env.WORKER_MODE ?? "all").trim(),
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
     ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
     ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
@@ -814,45 +814,45 @@ async function processClipJob(payload: ClipProcessJobData) {
             throw new Error("No output segments remain after applying clip gaps");
         }
 
-    const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
-    const requestedFps = request.fps ?? defaultFps;
-    const introDuration = request.introDuration && request.introDuration > 0
-        ? request.introDuration
-        : defaultIntroDurationSeconds;
-    const jobRoot = getJobRoot(job.sessionId, job.id);
-    const segmentsRoot = join(jobRoot, "segments");
-    const audioProgramPath = join(jobRoot, "audio-program.m4a");
-    const videoProgramPath = join(jobRoot, "video-program.mp4");
-    const introClipPath = join(jobRoot, "intro-clip.mp4");
-    const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "result-video");
-    const outputAudioFilename = sanitizeOutputFilename(request.outputAudioFilename, ".mp3", "result-audio");
-    const outputVideoPath = join(jobRoot, outputVideoFilename);
-    const outputAudioPath = join(jobRoot, outputAudioFilename);
-    const processingManifestPath = join(jobRoot, "manifest.json");
+        const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
+        const requestedFps = request.fps ?? defaultFps;
+        const introDuration = request.introDuration && request.introDuration > 0
+            ? request.introDuration
+            : defaultIntroDurationSeconds;
+        const jobRoot = getJobRoot(job.sessionId, job.id);
+        const segmentsRoot = join(jobRoot, "segments");
+        const audioProgramPath = join(jobRoot, "audio-program.m4a");
+        const videoProgramPath = join(jobRoot, "video-program.mp4");
+        const introClipPath = join(jobRoot, "intro-clip.mp4");
+        const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "result-video");
+        const outputAudioFilename = sanitizeOutputFilename(request.outputAudioFilename, ".mp3", "result-audio");
+        const outputVideoPath = join(jobRoot, outputVideoFilename);
+        const outputAudioPath = join(jobRoot, outputAudioFilename);
+        const processingManifestPath = join(jobRoot, "manifest.json");
 
-    const introImageAsset = request.introImageAssetId
-        ? await prisma.asset.findFirst({
-            where: {
-                id: request.introImageAssetId,
-                sessionId: job.sessionId,
-            },
-        })
-        : null;
+        const introImageAsset = request.introImageAssetId
+            ? await prisma.asset.findFirst({
+                where: {
+                    id: request.introImageAssetId,
+                    sessionId: job.sessionId,
+                },
+            })
+            : null;
 
-    if (request.introImageAssetId && !introImageAsset) {
-        throw new Error(`Intro image asset ${request.introImageAssetId} not found`);
-    }
+        if (request.introImageAssetId && !introImageAsset) {
+            throw new Error(`Intro image asset ${request.introImageAssetId} not found`);
+        }
 
         await mkdir(segmentsRoot, { recursive: true });
         await updateJobProgress(job.id, {
-        status: PrismaJobStatus.preparing,
-        effectiveHardware,
-        startedAt: new Date(),
-        stage: JobStage.extractClips,
-        stageProgress: 0,
-        overallProgress: 5,
-        message: "Preparing clip extraction",
-    });
+            status: PrismaJobStatus.preparing,
+            effectiveHardware,
+            startedAt: new Date(),
+            stage: JobStage.extractClips,
+            stageProgress: 0,
+            overallProgress: 5,
+            message: "Preparing clip extraction",
+        });
 
         const segmentPaths: string[] = [];
         const segmentDurations: number[] = [];
@@ -860,11 +860,11 @@ async function processClipJob(payload: ClipProcessJobData) {
         for (const [index, segment] of segments.entries()) {
             await assertJobNotCanceled(job.id);
 
-        const duration = getDurationSeconds(segment.startTime, segment.endTime);
+            const duration = getDurationSeconds(segment.startTime, segment.endTime);
 
-        if (duration <= 0) {
-            throw new Error(`Invalid clip duration for segment ${index + 1}`);
-        }
+            if (duration <= 0) {
+                throw new Error(`Invalid clip duration for segment ${index + 1}`);
+            }
 
             const segmentPath = join(segmentsRoot, `segment-${String(index + 1).padStart(2, "0")}.mp4`);
             await encodeSegment(job.id, job.asset.sourcePath, segmentPath, segment.startTime, duration, effectiveHardware, requestedFps);
@@ -873,93 +873,93 @@ async function processClipJob(payload: ClipProcessJobData) {
 
             const progress = Math.round(((index + 1) / segments.length) * 100);
             await updateJobProgress(job.id, {
-            status: PrismaJobStatus.preparing,
-            stage: JobStage.extractClips,
-            stageProgress: progress,
-            overallProgress: Math.min(60, 10 + Math.round(((index + 1) / segments.length) * 50)),
-            message: `Encoded segment ${index + 1} of ${segments.length}`,
+                status: PrismaJobStatus.preparing,
+                stage: JobStage.extractClips,
+                stageProgress: progress,
+                overallProgress: Math.min(60, 10 + Math.round(((index + 1) / segments.length) * 50)),
+                message: `Encoded segment ${index + 1} of ${segments.length}`,
             });
         }
 
         const audioTransitionDuration = getTransitionDuration(segments, defaultAudioTransitionDurationSeconds);
         const audioTransitionDurations = getUniformTransitionDurations(segmentDurations, audioTransitionDuration);
 
-    await assertJobNotCanceled(job.id);
+        await assertJobNotCanceled(job.id);
 
-    await updateJobProgress(job.id, {
-        status: PrismaJobStatus.encoding_audio,
-        stage: JobStage.encodeAudio,
-        stageProgress: 10,
-        overallProgress: 62,
-        message: "Rendering stitched audio artifact",
-    });
+        await updateJobProgress(job.id, {
+            status: PrismaJobStatus.encoding_audio,
+            stage: JobStage.encodeAudio,
+            stageProgress: 10,
+            overallProgress: 62,
+            message: "Rendering stitched audio artifact",
+        });
 
         await renderAudioArtifact(job.id, segmentPaths, segmentDurations, audioTransitionDurations, audioProgramPath);
 
-    await assertJobNotCanceled(job.id);
+        await assertJobNotCanceled(job.id);
 
-    await updateJobProgress(job.id, {
-        status: PrismaJobStatus.processing_audio,
-        stage: JobStage.normalizeAudio,
-        stageProgress: 20,
-        overallProgress: 72,
-        message: "Analyzing stitched audio levels",
-    });
+        await updateJobProgress(job.id, {
+            status: PrismaJobStatus.processing_audio,
+            stage: JobStage.normalizeAudio,
+            stageProgress: 20,
+            overallProgress: 72,
+            message: "Analyzing stitched audio levels",
+        });
 
         const audioLoudnormAnalysis = await analyzeAudioNormalization(job.id, audioProgramPath);
 
-    await assertJobNotCanceled(job.id);
+        await assertJobNotCanceled(job.id);
 
-    await updateJobProgress(job.id, {
-        status: PrismaJobStatus.processing_audio,
-        stage: JobStage.normalizeAudio,
-        stageProgress: 55,
-        overallProgress: 78,
-        message: "Normalizing stitched audio artifact",
-    });
+        await updateJobProgress(job.id, {
+            status: PrismaJobStatus.processing_audio,
+            stage: JobStage.normalizeAudio,
+            stageProgress: 55,
+            overallProgress: 78,
+            message: "Normalizing stitched audio artifact",
+        });
 
-    try {
+        try {
             await normalizeAudioOnly(job.id, audioProgramPath, outputAudioPath, audioLoudnormAnalysis);
-    }
-    finally {
-        await rm(audioProgramPath, { force: true });
-    }
+        }
+        finally {
+            await rm(audioProgramPath, { force: true });
+        }
 
-    const audioOutputStats = await stat(outputAudioPath);
-    const partialExpiresAt = new Date();
-    partialExpiresAt.setUTCDate(partialExpiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
+        const audioOutputStats = await stat(outputAudioPath);
+        const partialExpiresAt = new Date();
+        partialExpiresAt.setUTCDate(partialExpiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
 
-    await prisma.$transaction([
-        prisma.result.upsert({
-            where: { jobId: job.id },
-            update: {
-                sessionId: job.sessionId,
-                audioPath: outputAudioPath,
-                videoPath: pendingArtifactPath,
-                manifestPath: pendingArtifactPath,
-                expiresAt: partialExpiresAt,
-            },
-            create: {
-                jobId: job.id,
-                sessionId: job.sessionId,
-                videoPath: pendingArtifactPath,
-                audioPath: outputAudioPath,
-                manifestPath: pendingArtifactPath,
-                expiresAt: partialExpiresAt,
-            },
-        }),
-        prisma.processingArtifact.create({
-            data: {
-                jobId: job.id,
-                type: "audio",
-                filename: basename(outputAudioPath),
-                storagePath: outputAudioPath,
-                sizeBytes: BigInt(audioOutputStats.size),
-            },
-        }),
-    ]);
+        await prisma.$transaction([
+            prisma.result.upsert({
+                where: { jobId: job.id },
+                update: {
+                    sessionId: job.sessionId,
+                    audioPath: outputAudioPath,
+                    videoPath: pendingArtifactPath,
+                    manifestPath: pendingArtifactPath,
+                    expiresAt: partialExpiresAt,
+                },
+                create: {
+                    jobId: job.id,
+                    sessionId: job.sessionId,
+                    videoPath: pendingArtifactPath,
+                    audioPath: outputAudioPath,
+                    manifestPath: pendingArtifactPath,
+                    expiresAt: partialExpiresAt,
+                },
+            }),
+            prisma.processingArtifact.create({
+                data: {
+                    jobId: job.id,
+                    type: "audio",
+                    filename: basename(outputAudioPath),
+                    storagePath: outputAudioPath,
+                    sizeBytes: BigInt(audioOutputStats.size),
+                },
+            }),
+        ]);
 
-    await assertJobNotCanceled(job.id);
+        await assertJobNotCanceled(job.id);
 
         const videoSegmentPaths = [...segmentPaths];
         const videoSegmentDurations = [...segmentDurations];
@@ -970,156 +970,156 @@ async function processClipJob(payload: ClipProcessJobData) {
             videoSegmentDurations.unshift(introDuration);
         }
 
-    await assertJobNotCanceled(job.id);
-
-    const videoTransitionDuration = getTransitionDuration(videoSegmentDurations.map((duration, index) => ({
-        startTime: 0,
-        endTime: duration,
-    })), introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5);
-    const videoTransitionDurations = getUniformTransitionDurations(
-        videoSegmentDurations,
-        introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5,
-    );
-
-    if (videoTransitionDuration > 0 && videoSegmentPaths.length > 1) {
-        await updateJobProgress(job.id, {
-            status: PrismaJobStatus.encoding_video,
-            stage: JobStage.buildTransitions,
-            stageProgress: 0,
-            overallProgress: 65,
-            message: `Rendering ${videoSegmentPaths.length - 1} video crossfade transition(s)`,
-        });
-
-            await renderSegmentsWithTransitions(
-            job.id,
-            videoSegmentPaths,
-            videoSegmentDurations,
-            videoProgramPath,
-            videoTransitionDurations,
-            effectiveHardware,
-        );
-
         await assertJobNotCanceled(job.id);
 
-        await updateJobProgress(job.id, {
-            status: PrismaJobStatus.encoding_video,
-            stage: JobStage.buildTransitions,
-            stageProgress: 100,
-            overallProgress: 72,
-            message: "Transition rendering complete",
-        });
-    }
-    else {
-        await updateJobProgress(job.id, {
-            status: PrismaJobStatus.encoding_video,
-            stage: JobStage.encodeVideo,
-            stageProgress: 0,
-            overallProgress: 65,
-            message: "Rendering stitched video artifact",
-        });
+        const videoTransitionDuration = getTransitionDuration(videoSegmentDurations.map((duration, index) => ({
+            startTime: 0,
+            endTime: duration,
+        })), introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5);
+        const videoTransitionDurations = getUniformTransitionDurations(
+            videoSegmentDurations,
+            introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5,
+        );
+
+        if (videoTransitionDuration > 0 && videoSegmentPaths.length > 1) {
+            await updateJobProgress(job.id, {
+                status: PrismaJobStatus.encoding_video,
+                stage: JobStage.buildTransitions,
+                stageProgress: 0,
+                overallProgress: 65,
+                message: `Rendering ${videoSegmentPaths.length - 1} video crossfade transition(s)`,
+            });
+
+            await renderSegmentsWithTransitions(
+                job.id,
+                videoSegmentPaths,
+                videoSegmentDurations,
+                videoProgramPath,
+                videoTransitionDurations,
+                effectiveHardware,
+            );
+
+            await assertJobNotCanceled(job.id);
+
+            await updateJobProgress(job.id, {
+                status: PrismaJobStatus.encoding_video,
+                stage: JobStage.buildTransitions,
+                stageProgress: 100,
+                overallProgress: 72,
+                message: "Transition rendering complete",
+            });
+        }
+        else {
+            await updateJobProgress(job.id, {
+                status: PrismaJobStatus.encoding_video,
+                stage: JobStage.encodeVideo,
+                stageProgress: 0,
+                overallProgress: 65,
+                message: "Rendering stitched video artifact",
+            });
 
             await renderConcatenatedVideoArtifact(job.id, videoSegmentPaths, videoSegmentDurations, videoProgramPath, effectiveHardware);
-    }
-
-    await assertJobNotCanceled(job.id);
-
-    await updateJobProgress(job.id, {
-        status: PrismaJobStatus.processing_audio,
-        stage: JobStage.normalizeAudio,
-        stageProgress: 70,
-        overallProgress: 84,
-        message: "Analyzing stitched video audio levels",
-    });
-
-    try {
-            const videoLoudnormAnalysis = await analyzeAudioNormalization(job.id, videoProgramPath);
+        }
 
         await assertJobNotCanceled(job.id);
 
         await updateJobProgress(job.id, {
             status: PrismaJobStatus.processing_audio,
             stage: JobStage.normalizeAudio,
-            stageProgress: 90,
-            overallProgress: 92,
-            message: "Normalizing stitched video audio",
+            stageProgress: 70,
+            overallProgress: 84,
+            message: "Analyzing stitched video audio levels",
         });
 
-            await normalizeVideoAudio(job.id, videoProgramPath, outputVideoPath, videoLoudnormAnalysis);
-    }
-    finally {
-        await rm(videoProgramPath, { force: true });
-        await rm(introClipPath, { force: true });
-    }
+        try {
+            const videoLoudnormAnalysis = await analyzeAudioNormalization(job.id, videoProgramPath);
 
-    await assertJobNotCanceled(job.id);
+            await assertJobNotCanceled(job.id);
+
+            await updateJobProgress(job.id, {
+                status: PrismaJobStatus.processing_audio,
+                stage: JobStage.normalizeAudio,
+                stageProgress: 90,
+                overallProgress: 92,
+                message: "Normalizing stitched video audio",
+            });
+
+            await normalizeVideoAudio(job.id, videoProgramPath, outputVideoPath, videoLoudnormAnalysis);
+        }
+        finally {
+            await rm(videoProgramPath, { force: true });
+            await rm(introClipPath, { force: true });
+        }
+
+        await assertJobNotCanceled(job.id);
 
         const outputStats = await stat(outputVideoPath);
         const outputDuration = await detectOutputDuration(job.id, outputVideoPath);
 
-    await writeFile(processingManifestPath, JSON.stringify({
-        jobId: job.id,
-        assetId: job.assetId,
-        sourcePath: job.asset.sourcePath,
-        outputVideoPath,
-        outputAudioPath,
-        segments,
-        audioTransitionDuration,
-        videoTransitionDuration: introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5,
-        introImageAssetId: introImageAsset?.id ?? null,
-        introDuration: introImageAsset ? introDuration : 0,
-        fadeInOutApplied: true,
-        stillImageFadeInApplied: Boolean(introImageAsset),
-        introCrossfadeDuration: introImageAsset ? (videoTransitionDurations[0] ?? 0) : 0,
-        effectiveHardware,
-        normalizedAudio: true,
-        videoIncludesStillIntro: Boolean(introImageAsset),
-        createdAt: new Date().toISOString(),
-    }, null, 2));
+        await writeFile(processingManifestPath, JSON.stringify({
+            jobId: job.id,
+            assetId: job.assetId,
+            sourcePath: job.asset.sourcePath,
+            outputVideoPath,
+            outputAudioPath,
+            segments,
+            audioTransitionDuration,
+            videoTransitionDuration: introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5,
+            introImageAssetId: introImageAsset?.id ?? null,
+            introDuration: introImageAsset ? introDuration : 0,
+            fadeInOutApplied: true,
+            stillImageFadeInApplied: Boolean(introImageAsset),
+            introCrossfadeDuration: introImageAsset ? (videoTransitionDurations[0] ?? 0) : 0,
+            effectiveHardware,
+            normalizedAudio: true,
+            videoIncludesStillIntro: Boolean(introImageAsset),
+            createdAt: new Date().toISOString(),
+        }, null, 2));
 
-    const expiresAt = new Date();
-    expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
+        const expiresAt = new Date();
+        expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
 
         await prisma.$transaction([
-        prisma.result.upsert({
-            where: { jobId: job.id },
-            update: {
-                sessionId: job.sessionId,
-                videoPath: outputVideoPath,
-                audioPath: outputAudioPath,
-                manifestPath: processingManifestPath,
-                sizeBytes: BigInt(outputStats.size),
-                duration: outputDuration,
-                expiresAt,
-            },
-            create: {
-                jobId: job.id,
-                sessionId: job.sessionId,
-                videoPath: outputVideoPath,
-                audioPath: outputAudioPath,
-                manifestPath: processingManifestPath,
-                sizeBytes: BigInt(outputStats.size),
-                duration: outputDuration,
-                expiresAt,
-            },
-        }),
-        prisma.processingArtifact.createMany({
-            data: [
-                {
-                    jobId: job.id,
-                    type: "video",
-                    filename: basename(outputVideoPath),
-                    storagePath: outputVideoPath,
+            prisma.result.upsert({
+                where: { jobId: job.id },
+                update: {
+                    sessionId: job.sessionId,
+                    videoPath: outputVideoPath,
+                    audioPath: outputAudioPath,
+                    manifestPath: processingManifestPath,
                     sizeBytes: BigInt(outputStats.size),
+                    duration: outputDuration,
+                    expiresAt,
                 },
-                {
+                create: {
                     jobId: job.id,
-                    type: "manifest",
-                    filename: basename(processingManifestPath),
-                    storagePath: processingManifestPath,
+                    sessionId: job.sessionId,
+                    videoPath: outputVideoPath,
+                    audioPath: outputAudioPath,
+                    manifestPath: processingManifestPath,
+                    sizeBytes: BigInt(outputStats.size),
+                    duration: outputDuration,
+                    expiresAt,
                 },
-            ],
-        }),
-    ]);
+            }),
+            prisma.processingArtifact.createMany({
+                data: [
+                    {
+                        jobId: job.id,
+                        type: "video",
+                        filename: basename(outputVideoPath),
+                        storagePath: outputVideoPath,
+                        sizeBytes: BigInt(outputStats.size),
+                    },
+                    {
+                        jobId: job.id,
+                        type: "manifest",
+                        filename: basename(processingManifestPath),
+                        storagePath: processingManifestPath,
+                    },
+                ],
+            }),
+        ]);
 
         await updateJobProgress(job.id, {
             status: PrismaJobStatus.completed,
