@@ -1,0 +1,25 @@
+# Normalize text files in git and enforce line endings for critical script types.
+* text=auto
+
+# POSIX and container/runtime files must stay LF.
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.env text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+
+# Source files should be LF for cross-platform tooling.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Windows-native script formats keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

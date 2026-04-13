@@ -23,6 +23,62 @@ interface ClipRange {
 
 const PLAYBACK_SPEEDS = [-4, -2, -1, 1, 2, 4];
 const DEFAULT_PLAYBACK_INDEX = 3;
+const HARDWARE_CACHE_KEY = 'editor-hardware-capabilities';
+
+interface CachedHardwareCapabilities {
+  detected: HardwareOption;
+  available: HardwareOption[];
+}
+
+function isHardwareOption(value: string): value is HardwareOption {
+  return value === 'auto' || value === 'cpu' || value === 'intel' || value === 'cuda' || value === 'apple' || value === 'vaapi';
+}
+
+function readCachedHardwareCapabilities(): CachedHardwareCapabilities | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(HARDWARE_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<CachedHardwareCapabilities>;
+    if (!parsed || !parsed.detected || !Array.isArray(parsed.available)) {
+      return null;
+    }
+
+    if (!isHardwareOption(parsed.detected)) {
+      return null;
+    }
+
+    const available = parsed.available.filter((value): value is HardwareOption => isHardwareOption(value));
+    if (!available.length) {
+      return null;
+    }
+
+    return {
+      detected: parsed.detected,
+      available,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedHardwareCapabilities(capabilities: CachedHardwareCapabilities) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(HARDWARE_CACHE_KEY, JSON.stringify(capabilities));
+  } catch {
+    // Ignore storage failures.
+  }
+}
 
 function formatTimestamp(seconds: number): string {
   const clamped = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
@@ -70,6 +126,7 @@ function toSafeBaseFilename(value: string): string {
 
 export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowProps) {
   const assetDuration = asset.duration ?? 0;
+  const cachedHardware = readCachedHardwareCapabilities();
   const [resolvedDuration, setResolvedDuration] = useState(Math.max(0, assetDuration));
 
   const [startTimeText, setStartTimeText] = useState('0.000');
@@ -78,9 +135,12 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const [currentTime, setCurrentTime] = useState(0);
   const [fps, setFps] = useState(30);
   const [peaks, setPeaks] = useState<PeaksResponse | null>(null);
-  const [hardware, setHardware] = useState<HardwareOption>('auto');
-  const [detectedHardware, setDetectedHardware] = useState<HardwareOption>('auto');
-  const [availableHardware, setAvailableHardware] = useState<Set<HardwareOption>>(new Set<HardwareOption>(['auto', 'cpu']));
+  const [hardware, setHardware] = useState<HardwareOption>(cachedHardware?.detected ?? 'auto');
+  const [detectedHardware, setDetectedHardware] = useState<HardwareOption>(cachedHardware?.detected ?? 'auto');
+  const [availableHardware, setAvailableHardware] = useState<Set<HardwareOption>>(
+    new Set<HardwareOption>(cachedHardware?.available?.length ? ['auto', ...cachedHardware.available] : ['auto', 'cpu'])
+  );
+  const [hardwareLoading, setHardwareLoading] = useState(true);
   const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
   const [coverImageAssetId, setCoverImageAssetId] = useState<string | null>(null);
   const [coverImageUploading, setCoverImageUploading] = useState(false);
@@ -94,6 +154,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const waveformContainerRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const backwardIntervalRef = useRef<number | null>(null);
+  const hardwareTouchedRef = useRef(false);
   const videoSourceUrl = getAssetSourceUrl(asset.assetId);
   const effectiveDuration = Math.max(0, resolvedDuration, assetDuration);
 
@@ -108,48 +169,91 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
 
   useEffect(() => {
     let mounted = true;
+    setHardwareLoading(true);
 
     const loadEditorMetadata = async () => {
+      const fpsPromise = getAssetFps(asset.assetId);
+      const peaksPromise = getAssetPeaks(asset.assetId);
+      const hardwarePromise = getHardwareCapabilities();
+
+      void fpsPromise
+        .then((fpsValue) => {
+          if (!mounted) {
+            return;
+          }
+
+          setFps(fpsValue.fps || 30);
+          const durationFromMetadata = fpsValue.duration;
+          if (Number.isFinite(durationFromMetadata) && durationFromMetadata > 0) {
+            setResolvedDuration((prev) => Math.max(prev, durationFromMetadata));
+            setEndTimeText((prev) => {
+              const current = parseTimeInput(prev);
+              if (current === null || current <= 0) {
+                return durationFromMetadata.toFixed(3);
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(() => {
+          // Handled by Promise.allSettled below.
+        });
+
+      void peaksPromise
+        .then((peaksValue) => {
+          if (!mounted) {
+            return;
+          }
+
+          setPeaks(peaksValue);
+        })
+        .catch(() => {
+          if (!mounted) {
+            return;
+          }
+
+          setPeaks({
+            data: new Array<number>(120).fill(0),
+            length: 120,
+            bits: 16,
+            sampleRate: 16000,
+          });
+        });
+
+      void hardwarePromise
+        .then((hardwareValue) => {
+          if (!mounted) {
+            return;
+          }
+
+          setDetectedHardware(hardwareValue.detected);
+          if (!hardwareTouchedRef.current) {
+            setHardware(hardwareValue.detected || 'auto');
+          }
+          const mergedAvailable = Array.from(new Set<HardwareOption>(['auto', ...hardwareValue.available]));
+          setAvailableHardware(new Set<HardwareOption>(mergedAvailable));
+          writeCachedHardwareCapabilities({
+            detected: hardwareValue.detected,
+            available: mergedAvailable,
+          });
+        })
+        .catch(() => {
+          // Leave cached/default state on hardware detection failures.
+        })
+        .finally(() => {
+          if (mounted) {
+            setHardwareLoading(false);
+          }
+        });
+
       const [fpsResult, peaksResult, hardwareResult] = await Promise.allSettled([
-        getAssetFps(asset.assetId),
-        getAssetPeaks(asset.assetId),
-        getHardwareCapabilities(),
+        fpsPromise,
+        peaksPromise,
+        hardwarePromise,
       ]);
 
       if (!mounted) {
         return;
-      }
-
-      if (fpsResult.status === 'fulfilled') {
-        setFps(fpsResult.value.fps || 30);
-        const durationFromMetadata = fpsResult.value.duration;
-        if (Number.isFinite(durationFromMetadata) && durationFromMetadata > 0) {
-          setResolvedDuration((prev) => Math.max(prev, durationFromMetadata));
-          setEndTimeText((prev) => {
-            const current = parseTimeInput(prev);
-            if (current === null || current <= 0) {
-              return durationFromMetadata.toFixed(3);
-            }
-            return prev;
-          });
-        }
-      }
-
-      if (peaksResult.status === 'fulfilled') {
-        setPeaks(peaksResult.value);
-      } else {
-        setPeaks({
-          data: new Array<number>(120).fill(0),
-          length: 120,
-          bits: 16,
-          sampleRate: 16000,
-        });
-      }
-
-      if (hardwareResult.status === 'fulfilled') {
-        setDetectedHardware(hardwareResult.value.detected);
-        setHardware(hardwareResult.value.detected || 'auto');
-        setAvailableHardware(new Set<HardwareOption>(['auto', ...hardwareResult.value.available]));
       }
 
       if (
@@ -656,7 +760,10 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
             id="hardware_select"
             name="hardware_choice"
             value={hardware}
-            onChange={(e) => setHardware(e.target.value as HardwareOption)}
+            onChange={(e) => {
+              hardwareTouchedRef.current = true;
+              setHardware(e.target.value as HardwareOption);
+            }}
             aria-describedby="hardware-help"
           >
             <option value="auto">Auto (Detect)</option>
@@ -666,10 +773,16 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
             <option value="apple" disabled={!availableHardware.has('apple')}>Apple VideoToolbox</option>
             <option value="vaapi" disabled={!availableHardware.has('vaapi')}>VAAPI</option>
           </select>
-          <small id="hardware-help">Choose an encoder. Non-available options are disabled.</small>
+          <small id="hardware-help">
+            {hardwareLoading
+              ? 'Detecting hardware capabilities...'
+              : 'Choose an encoder. Non-available options are disabled.'}
+          </small>
         </div>
         <div className="hardware-right">
-          <span id="hardware-indicator" aria-live="polite">Detected: {detectedHardware}</span>
+          <span id="hardware-indicator" aria-live="polite">
+            Detected: {hardwareLoading ? 'detecting...' : detectedHardware}
+          </span>
         </div>
       </div>
 
