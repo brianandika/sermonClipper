@@ -98,6 +98,7 @@ model Result {
   sessionId    String
   videoPath    String?
   audioPath    String?
+  transcriptPath String?
   manifestPath String?
   sizeBytes    BigInt?
   duration     Float?

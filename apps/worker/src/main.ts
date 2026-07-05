@@ -1,6 +1,7 @@
 import "dotenv/config";
 import "reflect-metadata";
 import { copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -57,6 +58,15 @@ const runtimeEnv = {
     resultTtlDays: Number.parseInt(process.env.RESULT_TTL_DAYS ?? "7", 10),
     cpuWorkerConcurrency: Number.parseInt(process.env.CPU_WORKER_CONCURRENCY ?? String(defaultCpuConcurrency), 10),
     gpuWorkerConcurrency: Number.parseInt(process.env.GPU_WORKER_CONCURRENCY ?? "1", 10),
+    transcriptionEnabled: (process.env.ENABLE_TRANSCRIPTION ?? "true").trim().toLowerCase() !== "false",
+    pythonPath: process.env.PYTHON_PATH ?? "python3",
+    whisperModel: process.env.WHISPER_MODEL ?? "large-v3-turbo",
+    whisperModelDir: process.env.WHISPER_MODEL_DIR
+        ?? join(process.env.WORK_ROOT ?? "/workspaces/sermonClipper/work", "_models"),
+    whisperDevice: process.env.WHISPER_DEVICE ?? "auto",
+    whisperComputeType: process.env.WHISPER_COMPUTE_TYPE ?? "auto",
+    whisperLanguage: process.env.WHISPER_LANGUAGE ?? "en",
+    whisperScript: process.env.WHISPER_SCRIPT?.trim() || "",
 };
 const defaultIntroDurationSeconds = 5;
 const defaultFadeDurationSeconds = 1;
@@ -793,6 +803,63 @@ async function createStillImageClip(
     ]);
 }
 
+function resolveTranscribeScript() {
+    // Resolve without relying on __dirname (avoids CJS/ESM ambiguity). Covers
+    // prod (cwd=/app) and workspace dev (cwd=apps/worker), plus an override.
+    const candidates = [
+        runtimeEnv.whisperScript,
+        join(process.cwd(), "apps/worker/scripts/transcribe.py"),
+        join(process.cwd(), "scripts/transcribe.py"),
+    ].filter((candidate) => candidate.length > 0);
+
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+async function transcribeAudio(jobId: string, audioPath: string, outputTranscriptPath: string) {
+    const scriptPath = resolveTranscribeScript();
+    if (!scriptPath) {
+        process.stderr.write("Transcription skipped: transcribe.py not found\n");
+        return null;
+    }
+
+    try {
+        await execFileForJob(jobId, runtimeEnv.pythonPath, [
+            scriptPath,
+            "--audio", audioPath,
+            "--output", outputTranscriptPath,
+            "--model", runtimeEnv.whisperModel,
+            "--model-dir", runtimeEnv.whisperModelDir,
+            "--device", runtimeEnv.whisperDevice,
+            "--compute-type", runtimeEnv.whisperComputeType,
+            "--language", runtimeEnv.whisperLanguage,
+        ], { maxBuffer: 64 * 1024 * 1024 });
+
+        if (existsSync(outputTranscriptPath)) {
+            return outputTranscriptPath;
+        }
+
+        process.stderr.write("Transcription produced no output file\n");
+        return null;
+    }
+    catch (error) {
+        // Cancellation must still propagate; anything else is non-fatal so the
+        // MP3/MP4 exports are unaffected by a transcription failure.
+        if (error instanceof JobCanceledError) {
+            throw error;
+        }
+
+        const reason = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`Transcription failed (continuing without transcript): ${reason}\n`);
+        return null;
+    }
+}
+
 async function processClipJob(payload: ClipProcessJobData) {
     await assertJobNotCanceled(payload.jobId);
     startJobCancellationWatcher(payload.jobId);
@@ -1076,6 +1143,57 @@ async function processClipJob(payload: ClipProcessJobData) {
             createdAt: new Date().toISOString(),
         }, null, 2));
 
+        // Transcribe the exported audio to a plain-text transcript (best-effort).
+        // Runs at the end so the MP3/MP4 stay fast; a failure never fails the job.
+        const outputTranscriptPath = join(jobRoot, `${outputAudioFilename.replace(/\.mp3$/i, "")}.txt`);
+        let transcriptPath: string | null = null;
+
+        if (runtimeEnv.transcriptionEnabled) {
+            await updateJobProgress(job.id, {
+                stage: JobStage.transcribe,
+                stageProgress: 0,
+                overallProgress: 95,
+                message: "Transcribing sermon audio",
+            });
+
+            transcriptPath = await transcribeAudio(job.id, outputAudioPath, outputTranscriptPath);
+
+            await assertJobNotCanceled(job.id);
+        }
+
+        const finalArtifacts: Array<{
+            jobId: string;
+            type: string;
+            filename: string;
+            storagePath: string;
+            sizeBytes?: bigint;
+        }> = [
+            {
+                jobId: job.id,
+                type: "video",
+                filename: basename(outputVideoPath),
+                storagePath: outputVideoPath,
+                sizeBytes: BigInt(outputStats.size),
+            },
+            {
+                jobId: job.id,
+                type: "manifest",
+                filename: basename(processingManifestPath),
+                storagePath: processingManifestPath,
+            },
+        ];
+
+        if (transcriptPath) {
+            const transcriptStats = await stat(transcriptPath);
+            finalArtifacts.push({
+                jobId: job.id,
+                type: "transcript",
+                filename: basename(transcriptPath),
+                storagePath: transcriptPath,
+                sizeBytes: BigInt(transcriptStats.size),
+            });
+        }
+
         const expiresAt = new Date();
         expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
 
@@ -1086,6 +1204,7 @@ async function processClipJob(payload: ClipProcessJobData) {
                     sessionId: job.sessionId,
                     videoPath: outputVideoPath,
                     audioPath: outputAudioPath,
+                    transcriptPath,
                     manifestPath: processingManifestPath,
                     sizeBytes: BigInt(outputStats.size),
                     duration: outputDuration,
@@ -1096,6 +1215,7 @@ async function processClipJob(payload: ClipProcessJobData) {
                     sessionId: job.sessionId,
                     videoPath: outputVideoPath,
                     audioPath: outputAudioPath,
+                    transcriptPath,
                     manifestPath: processingManifestPath,
                     sizeBytes: BigInt(outputStats.size),
                     duration: outputDuration,
@@ -1103,21 +1223,7 @@ async function processClipJob(payload: ClipProcessJobData) {
                 },
             }),
             prisma.processingArtifact.createMany({
-                data: [
-                    {
-                        jobId: job.id,
-                        type: "video",
-                        filename: basename(outputVideoPath),
-                        storagePath: outputVideoPath,
-                        sizeBytes: BigInt(outputStats.size),
-                    },
-                    {
-                        jobId: job.id,
-                        type: "manifest",
-                        filename: basename(processingManifestPath),
-                        storagePath: processingManifestPath,
-                    },
-                ],
+                data: finalArtifacts,
             }),
         ]);
 

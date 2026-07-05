@@ -11,3 +11,7 @@ work/
 *.tsbuildinfo
 backups/
 data/
+venv/
+.venv/
+__pycache__/
+*.pyc

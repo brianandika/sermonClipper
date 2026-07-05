@@ -103,12 +103,19 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
 
   const audioUrl = getResultArtifact(currentResult.resultId, 'audio');
   const videoUrl = getResultArtifact(currentResult.resultId, 'video');
+  const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
   const duration = currentJob.payload.endTime - currentJob.payload.startTime;
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
+  const transcriptDownloadName = `${requestedBaseName?.trim() || 'transcript'}.txt`;
   const isVideoReady = Boolean(currentResult.videoPath);
   const isAudioReady = Boolean(currentResult.audioPath);
+  const isTranscriptReady = Boolean(currentResult.transcriptPath);
+  const jobIsTerminal = ['completed', 'failed', 'canceled', 'expired'].includes(currentJob.status);
+  // Transcript is written together with the video, so it appears once the video
+  // is ready. Hide the card if the job finished without one (disabled/failed).
+  const showTranscriptCard = isTranscriptReady || !jobIsTerminal;
 
   return (
     <div className="container results-page">
@@ -172,6 +179,36 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
             </div>
           )}
         </article>
+
+        {showTranscriptCard && (
+          <article className="results-card">
+            <div className="results-card-head">
+              <h2>Transcript</h2>
+              <span className="results-chip">TXT</span>
+            </div>
+            {isTranscriptReady ? (
+              <>
+                <iframe
+                  title="Sermon transcript"
+                  src={transcriptUrl}
+                  className="results-transcript-preview"
+                  style={{
+                    width: '100%',
+                    height: '180px',
+                    border: '1px solid rgba(148, 163, 184, 0.4)',
+                    borderRadius: '8px',
+                    background: '#fff',
+                  }}
+                />
+                <a href={transcriptUrl} download={transcriptDownloadName} className="btn results-download-btn">
+                  Download Transcript
+                </a>
+              </>
+            ) : (
+              <p className="results-pending-copy">Transcript is generated after the video finishes encoding.</p>
+            )}
+          </article>
+        )}
       </section>
     </div>
   );

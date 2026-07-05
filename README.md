@@ -41,6 +41,7 @@ Each job currently produces:
 
 - one MP3 audio artifact
 - one MP4 video artifact
+- one plain-text `.txt` transcript
 
 The worker processes audio first and publishes the result early, so users can download the MP3 while the MP4 is still encoding.
 
@@ -52,6 +53,29 @@ Current processing rules:
 - the audio output is normalized after stitching
 - the video output is normalized after stitching and video rendering
 - a still intro image, when provided, is only inserted into the video pipeline
+- after the MP4 finishes, the exported audio is transcribed to a `.txt` transcript
+
+## Transcription
+
+Every processed sermon also produces a plain-text transcript alongside the MP3
+and MP4. Transcription runs fully locally in the worker via
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (invoked as a Python
+subprocess, the same way the worker shells out to `ffmpeg`).
+
+- It runs at the **end** of the pipeline, so the MP3/MP4 exports are never
+  delayed; the transcript is added as a final artifact.
+- It is **best-effort**: if transcription fails or is disabled, the MP3/MP4
+  still complete normally.
+- The model (`large-v3-turbo`, ~1.5 GB) downloads on first job into
+  `WHISPER_MODEL_DIR` (defaults to `${WORK_ROOT}/_models`, which lives on the
+  shared `work` volume so it persists and is downloaded only once).
+- **GPU:** with `WHISPER_DEVICE=auto` the worker uses the NVIDIA GPU when the
+  CUDA/cuDNN runtime is available (the `nvidia-*-cu12` packages in
+  `apps/worker/requirements.txt` provide it) and otherwise falls back to CPU
+  automatically.
+
+The transcript is downloadable from the Results page and served by the API at
+`GET /api/results/:resultId/transcript`.
 
 ## Prerequisites
 
@@ -101,6 +125,16 @@ Copy [/.env.example](/workspaces/sermonClipper/.env.example) to `/.env` before r
 - `WORKER_MODE`: which queue set the worker should serve. The normal value is `all`.
 - `CPU_WORKER_CONCURRENCY`: maximum concurrent CPU-oriented jobs.
 - `GPU_WORKER_CONCURRENCY`: maximum concurrent GPU encode jobs.
+
+### Transcription
+
+- `ENABLE_TRANSCRIPTION`: set to `false` to skip transcript generation.
+- `WHISPER_MODEL`: faster-whisper model id (default `large-v3-turbo`).
+- `WHISPER_MODEL_DIR`: where the model is cached (default `${WORK_ROOT}/_models`).
+- `WHISPER_DEVICE`: `auto` (GPU if available, else CPU), `cpu`, or `cuda`.
+- `WHISPER_COMPUTE_TYPE`: `auto`, `int8`, `float16`, or `float32`.
+- `WHISPER_LANGUAGE`: language code (default `en`), or `auto` to detect.
+- `PYTHON_PATH`: Python executable used for the transcription script (default `python3`).
 
 ## Example `.env`
 

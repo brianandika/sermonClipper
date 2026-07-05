@@ -260,6 +260,7 @@ export class JobsService {
                     sessionId: job.result.sessionId,
                     videoPath: normalizeResultPath(job.result.videoPath),
                     audioPath: normalizeResultPath(job.result.audioPath),
+                    transcriptPath: normalizeResultPath(job.result.transcriptPath),
                     manifestPath: normalizeResultPath(job.result.manifestPath),
                     sizeBytes: job.result.sizeBytes?.toString() ?? null,
                     duration: job.result.duration,

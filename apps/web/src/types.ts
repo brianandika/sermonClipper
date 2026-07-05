@@ -84,6 +84,7 @@ export interface Result {
   sessionId: string;
   audioPath: string | null;
   videoPath: string | null;
+  transcriptPath?: string | null;
   manifestPath?: string | null;
   sizeBytes?: string | null;
   duration?: number | null;
