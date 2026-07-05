@@ -41,7 +41,7 @@ Each job currently produces:
 
 - one MP3 audio artifact
 - one MP4 video artifact
-- one plain-text `.txt` transcript
+- one WebVTT (`.vtt`) transcript with timestamps
 
 The worker processes audio first and publishes the result early, so users can download the MP3 while the MP4 is still encoding.
 
@@ -53,12 +53,12 @@ Current processing rules:
 - the audio output is normalized after stitching
 - the video output is normalized after stitching and video rendering
 - a still intro image, when provided, is only inserted into the video pipeline
-- after the MP4 finishes, the exported audio is transcribed to a `.txt` transcript
+- after the MP4 finishes, the exported audio is transcribed to a `.vtt` transcript
 
 ## Transcription
 
-Every processed sermon also produces a plain-text transcript alongside the MP3
-and MP4. Transcription runs fully locally in the worker via
+Every processed sermon also produces a timestamped WebVTT (`.vtt`) transcript
+alongside the MP3 and MP4. Transcription runs fully locally in the worker via
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (invoked as a Python
 subprocess, the same way the worker shells out to `ffmpeg`).
 

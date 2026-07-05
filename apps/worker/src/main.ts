@@ -1444,9 +1444,9 @@ async function processClipJob(payload: ClipProcessJobData) {
             createdAt: new Date().toISOString(),
         }, null, 2));
 
-        // Transcribe the exported audio to a plain-text transcript (best-effort).
+        // Transcribe the exported audio to a WebVTT (.vtt) transcript (best-effort).
         // Runs at the end so the MP3/MP4 stay fast; a failure never fails the job.
-        const outputTranscriptPath = join(jobRoot, `${outputAudioFilename.replace(/\.mp3$/i, "")}.txt`);
+        const outputTranscriptPath = join(jobRoot, `${outputAudioFilename.replace(/\.mp3$/i, "")}.vtt`);
         let transcriptPath: string | null = null;
 
         if (runtimeEnv.transcriptionEnabled) {

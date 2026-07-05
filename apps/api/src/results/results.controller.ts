@@ -63,7 +63,7 @@ export class ResultsController {
         if (!result.transcriptPath) {
             throw new NotFoundException("Transcript is not ready yet");
         }
-        response.type("text/plain");
+        response.type("text/vtt");
         response.sendFile(result.transcriptPath);
     }
 }

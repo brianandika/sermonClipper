@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local sermon transcription for the worker pipeline.
 
-Runs faster-whisper (CTranslate2) fully offline and writes a plain-text
+Runs faster-whisper (CTranslate2) fully offline and writes a WebVTT (.vtt)
 transcript to an exact output path. Invoked as a subprocess by the Node worker,
 mirroring how the worker shells out to ffmpeg/ffprobe.
 
@@ -18,13 +18,29 @@ def eprint(*args):
     print(*args, file=sys.stderr, flush=True)
 
 
+def format_timestamp(seconds):
+    """Format seconds as a WebVTT timestamp: HH:MM:SS.mmm"""
+    if seconds is None or seconds < 0:
+        seconds = 0
+    total_ms = int(round(seconds * 1000))
+    hours = total_ms // 3_600_000
+    minutes = (total_ms % 3_600_000) // 60_000
+    secs = (total_ms % 60_000) // 1000
+    millis = total_ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
 def write_transcript(segments, info, output_path):
+    """Write a WebVTT (.vtt) transcript with per-segment cue timestamps."""
     total = getattr(info, "duration", 0) or 0
     with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write("WEBVTT\n\n")
         for segment in segments:
             text = segment.text.strip()
             if text:
-                handle.write(text + "\n")
+                start = format_timestamp(segment.start)
+                end = format_timestamp(segment.end)
+                handle.write(f"{start} --> {end}\n{text}\n\n")
             if total > 0:
                 pct = min(int((segment.end / total) * 100), 99)
                 eprint(f"[transcribe] progress={pct}")
@@ -63,9 +79,9 @@ def run(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Transcribe audio to a .txt file")
+    parser = argparse.ArgumentParser(description="Transcribe audio to a .vtt file")
     parser.add_argument("--audio", required=True, help="Path to the input audio file")
-    parser.add_argument("--output", required=True, help="Path to write the .txt transcript")
+    parser.add_argument("--output", required=True, help="Path to write the .vtt transcript")
     parser.add_argument("--model", default="large-v3-turbo")
     parser.add_argument("--model-dir", default="models")
     parser.add_argument("--device", default="auto", help="auto | cpu | cuda")

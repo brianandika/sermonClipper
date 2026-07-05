@@ -108,7 +108,7 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
-  const transcriptDownloadName = `${requestedBaseName?.trim() || 'transcript'}.txt`;
+  const transcriptDownloadName = `${requestedBaseName?.trim() || 'transcript'}.vtt`;
   const isVideoReady = Boolean(currentResult.videoPath);
   const isAudioReady = Boolean(currentResult.audioPath);
   const isTranscriptReady = Boolean(currentResult.transcriptPath);
@@ -184,7 +184,7 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
           <article className="results-card">
             <div className="results-card-head">
               <h2>Transcript</h2>
-              <span className="results-chip">TXT</span>
+              <span className="results-chip">VTT</span>
             </div>
             {isTranscriptReady ? (
               <>
@@ -201,7 +201,7 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
                   }}
                 />
                 <a href={transcriptUrl} download={transcriptDownloadName} className="btn results-download-btn">
-                  Download Transcript
+                  Download Captions (VTT)
                 </a>
               </>
             ) : (
