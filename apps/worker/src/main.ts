@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import IORedis from "ioredis";
 import { PrismaClient, JobStatus as PrismaJobStatus, HardwareOption } from "@prisma/client";
 import { JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type QueueName } from "@sermon-clipper/shared";
@@ -184,6 +184,76 @@ async function execFileForJob(jobId: string, command: string, args: string[], op
     }
 }
 
+type FfmpegRunOptions = {
+    totalDurationSec?: number;
+    onProgress?: (fraction: number) => void;
+};
+
+// Runs ffmpeg while streaming its `-progress` output so callers can report
+// smooth intra-operation progress. Returns captured stderr (needed for the
+// loudnorm JSON). Honors job cancellation via the shared AbortController set.
+async function runFfmpeg(jobId: string, args: string[], options: FfmpegRunOptions = {}): Promise<{ stderr: string }> {
+    await assertJobNotCanceled(jobId);
+
+    const controller = new AbortController();
+    registerJobController(jobId, controller);
+
+    const total = options.totalDurationSec && options.totalDurationSec > 0 ? options.totalDurationSec : 0;
+    const fullArgs = ["-progress", "pipe:1", "-nostats", ...args];
+
+    return await new Promise<{ stderr: string }>((resolve, reject) => {
+        const child = spawn(runtimeEnv.ffmpegPath, fullArgs, { signal: controller.signal });
+        let stderr = "";
+        let stdoutBuffer = "";
+
+        child.stdout?.on("data", (chunk: Buffer) => {
+            if (total <= 0 || !options.onProgress) {
+                return;
+            }
+
+            stdoutBuffer += chunk.toString();
+            let newlineIndex = stdoutBuffer.indexOf("\n");
+            while (newlineIndex !== -1) {
+                const line = stdoutBuffer.slice(0, newlineIndex).trim();
+                stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+                if (line.startsWith("out_time_us=")) {
+                    const microseconds = Number.parseInt(line.slice("out_time_us=".length), 10);
+                    if (Number.isFinite(microseconds) && microseconds >= 0) {
+                        options.onProgress(microseconds / 1_000_000 / total);
+                    }
+                }
+                newlineIndex = stdoutBuffer.indexOf("\n");
+            }
+        });
+
+        child.stderr?.on("data", (chunk: Buffer) => {
+            stderr += chunk.toString();
+        });
+
+        child.on("error", (error: NodeJS.ErrnoException) => {
+            unregisterJobController(jobId, controller);
+            if (error.name === "AbortError") {
+                reject(new JobCanceledError(jobId));
+                return;
+            }
+            reject(error);
+        });
+
+        child.on("close", (code) => {
+            unregisterJobController(jobId, controller);
+            if (controller.signal.aborted) {
+                reject(new JobCanceledError(jobId));
+                return;
+            }
+            if (code === 0) {
+                resolve({ stderr });
+                return;
+            }
+            reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-800)}`));
+        });
+    });
+}
+
 function getJobRoot(sessionId: string, jobId: string) {
     return join(runtimeEnv.workRoot, sessionId, "jobs", jobId);
 }
@@ -308,10 +378,13 @@ async function updateJobProgress(jobId: string, data: {
     startedAt?: Date;
     finishedAt?: Date;
     failureReason?: string | null;
-    stage: JobStage;
-    stageProgress: number;
-    overallProgress: number;
-    message: string;
+    stage?: JobStage;
+    stageProgress?: number;
+    overallProgress?: number;
+    audioProgress?: number;
+    videoProgress?: number;
+    transcriptProgress?: number;
+    message?: string;
 }) {
     await prisma.job.update({
         where: { id: jobId },
@@ -324,21 +397,64 @@ async function updateJobProgress(jobId: string, data: {
             progress: {
                 upsert: {
                     create: {
-                        stage: data.stage,
-                        stageProgress: data.stageProgress,
-                        overallProgress: data.overallProgress,
-                        message: data.message,
+                        stage: data.stage ?? JobStage.extractClips,
+                        stageProgress: data.stageProgress ?? 0,
+                        overallProgress: data.overallProgress ?? 0,
+                        audioProgress: data.audioProgress ?? 0,
+                        videoProgress: data.videoProgress ?? 0,
+                        transcriptProgress: data.transcriptProgress ?? 0,
+                        message: data.message ?? "",
                     },
                     update: {
                         stage: data.stage,
                         stageProgress: data.stageProgress,
                         overallProgress: data.overallProgress,
+                        audioProgress: data.audioProgress,
+                        videoProgress: data.videoProgress,
+                        transcriptProgress: data.transcriptProgress,
                         message: data.message,
                     },
                 },
             },
         },
     });
+}
+
+// Serialize progress writes per job so throttled mid-op tick writes and awaited
+// boundary checkpoints never race (last write wins in submission order).
+const progressWriteChains = new Map<string, Promise<unknown>>();
+
+function enqueueProgressWrite(jobId: string, data: Parameters<typeof updateJobProgress>[1]) {
+    const previous = progressWriteChains.get(jobId) ?? Promise.resolve();
+    const next = previous.then(() => updateJobProgress(jobId, data)).catch(() => undefined);
+    progressWriteChains.set(jobId, next);
+    return next;
+}
+
+type PhaseField = "audioProgress" | "videoProgress" | "transcriptProgress";
+
+// Maps a 0..1 op fraction into a [low, high] slice of a phase bar and emits
+// throttled, monotonic progress updates. The ffmpeg process has fully closed by
+// the time we await the next boundary checkpoint, so no stale ticks arrive late.
+function createBandReporter(jobId: string, field: PhaseField, low: number, high: number) {
+    let lastValue = -1;
+    let lastWriteAt = 0;
+    return (fraction: number) => {
+        const clamped = Math.max(0, Math.min(1, fraction));
+        const value = Math.round(low + (high - low) * clamped);
+        const now = Date.now();
+        if (value <= lastValue) {
+            return;
+        }
+        if (value < high && now - lastWriteAt < 400) {
+            return;
+        }
+        lastValue = value;
+        lastWriteAt = now;
+        const update: Parameters<typeof updateJobProgress>[1] = {};
+        update[field] = value;
+        void enqueueProgressWrite(jobId, update);
+    };
 }
 
 async function assertJobNotCanceled(jobId: string) {
@@ -468,8 +584,13 @@ function getLoudnormFilter(analysis?: LoudnormAnalysis) {
     return `loudnorm=${filterParts.join(":")}`;
 }
 
-async function analyzeAudioNormalization(jobId: string, inputPath: string) {
-    const { stderr } = await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
+async function analyzeAudioNormalization(
+    jobId: string,
+    inputPath: string,
+    totalDurationSec?: number,
+    onProgress?: (fraction: number) => void,
+) {
+    const { stderr } = await runFfmpeg(jobId, [
         "-hide_banner",
         "-y",
         "-i",
@@ -480,13 +601,20 @@ async function analyzeAudioNormalization(jobId: string, inputPath: string) {
         "-f",
         "null",
         "-",
-    ]);
+    ], { totalDurationSec, onProgress });
 
     return getLoudnormAnalysis(stderr);
 }
 
-async function normalizeVideoAudio(jobId: string, inputPath: string, outputPath: string, analysis: LoudnormAnalysis) {
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
+async function normalizeVideoAudio(
+    jobId: string,
+    inputPath: string,
+    outputPath: string,
+    analysis: LoudnormAnalysis,
+    totalDurationSec?: number,
+    onProgress?: (fraction: number) => void,
+) {
+    await runFfmpeg(jobId, [
         "-hide_banner",
         "-y",
         "-i",
@@ -500,11 +628,18 @@ async function normalizeVideoAudio(jobId: string, inputPath: string, outputPath:
         "-movflags",
         "+faststart",
         outputPath,
-    ]);
+    ], { totalDurationSec, onProgress });
 }
 
-async function normalizeAudioOnly(jobId: string, inputPath: string, outputPath: string, analysis: LoudnormAnalysis) {
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
+async function normalizeAudioOnly(
+    jobId: string,
+    inputPath: string,
+    outputPath: string,
+    analysis: LoudnormAnalysis,
+    totalDurationSec?: number,
+    onProgress?: (fraction: number) => void,
+) {
+    await runFfmpeg(jobId, [
         "-hide_banner",
         "-y",
         "-i",
@@ -517,7 +652,7 @@ async function normalizeAudioOnly(jobId: string, inputPath: string, outputPath: 
         "-q:a",
         "2",
         outputPath,
-    ]);
+    ], { totalDurationSec, onProgress });
 }
 
 async function encodeSegment(
@@ -528,6 +663,7 @@ async function encodeSegment(
     duration: number,
     hardware: HardwareOption,
     fps?: number,
+    onProgress?: (fraction: number) => void,
 ) {
     const args = [
         "-hide_banner",
@@ -556,7 +692,7 @@ async function encodeSegment(
         outputPath,
     );
 
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
+    await runFfmpeg(jobId, args, { totalDurationSec: duration, onProgress });
 }
 
 async function concatSegments(jobId: string, manifestPath: string, outputPath: string) {
@@ -598,6 +734,7 @@ async function renderAudioArtifact(
     segmentDurations: number[],
     transitionDurations: number[],
     outputPath: string,
+    onProgress?: (fraction: number) => void,
 ) {
     const args = ["-hide_banner", "-y"];
 
@@ -650,7 +787,7 @@ async function renderAudioArtifact(
         outputPath,
     );
 
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
+    await runFfmpeg(jobId, args, { totalDurationSec: outputDuration, onProgress });
 }
 
 async function renderSegmentsWithTransitions(
@@ -660,6 +797,7 @@ async function renderSegmentsWithTransitions(
     outputPath: string,
     transitionDurations: number[],
     hardware: HardwareOption,
+    onProgress?: (fraction: number) => void,
 ) {
     const args = ["-hide_banner", "-y"];
 
@@ -717,7 +855,7 @@ async function renderSegmentsWithTransitions(
         outputPath,
     );
 
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
+    await runFfmpeg(jobId, args, { totalDurationSec: outputDuration, onProgress });
 }
 
 async function renderConcatenatedVideoArtifact(
@@ -726,6 +864,7 @@ async function renderConcatenatedVideoArtifact(
     segmentDurations: number[],
     outputPath: string,
     hardware: HardwareOption,
+    onProgress?: (fraction: number) => void,
 ) {
     const args = ["-hide_banner", "-y"];
 
@@ -764,7 +903,7 @@ async function renderConcatenatedVideoArtifact(
         outputPath,
     );
 
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, args);
+    await runFfmpeg(jobId, args, { totalDurationSec: outputDuration, onProgress });
 }
 
 async function createStillImageClip(
@@ -773,8 +912,9 @@ async function createStillImageClip(
     outputPath: string,
     introDuration: number,
     fps: number,
+    onProgress?: (fraction: number) => void,
 ) {
-    await execFileForJob(jobId, runtimeEnv.ffmpegPath, [
+    await runFfmpeg(jobId, [
         "-hide_banner",
         "-y",
         "-loop",
@@ -800,7 +940,7 @@ async function createStillImageClip(
         "-movflags",
         "+faststart",
         outputPath,
-    ]);
+    ], { totalDurationSec: introDuration, onProgress });
 }
 
 function resolveTranscribeScript() {
@@ -821,7 +961,70 @@ function resolveTranscribeScript() {
     return null;
 }
 
-async function transcribeAudio(jobId: string, audioPath: string, outputTranscriptPath: string) {
+async function runTranscribeProcess(jobId: string, args: string[], onProgress?: (fraction: number) => void) {
+    await assertJobNotCanceled(jobId);
+
+    const controller = new AbortController();
+    registerJobController(jobId, controller);
+
+    return await new Promise<void>((resolve, reject) => {
+        const child = spawn(runtimeEnv.pythonPath, args, { signal: controller.signal });
+        let stderrTail = "";
+        let stderrBuffer = "";
+
+        child.stderr?.on("data", (chunk: Buffer) => {
+            const text = chunk.toString();
+            stderrTail = (stderrTail + text).slice(-2000);
+            if (!onProgress) {
+                return;
+            }
+
+            stderrBuffer += text;
+            let newlineIndex = stderrBuffer.indexOf("\n");
+            while (newlineIndex !== -1) {
+                const line = stderrBuffer.slice(0, newlineIndex).trim();
+                stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+                const marker = "[transcribe] progress=";
+                if (line.startsWith(marker)) {
+                    const pct = Number.parseInt(line.slice(marker.length), 10);
+                    if (Number.isFinite(pct)) {
+                        onProgress(Math.max(0, Math.min(1, pct / 100)));
+                    }
+                }
+                newlineIndex = stderrBuffer.indexOf("\n");
+            }
+        });
+
+        child.on("error", (error: NodeJS.ErrnoException) => {
+            unregisterJobController(jobId, controller);
+            if (error.name === "AbortError") {
+                reject(new JobCanceledError(jobId));
+                return;
+            }
+            reject(error);
+        });
+
+        child.on("close", (code) => {
+            unregisterJobController(jobId, controller);
+            if (controller.signal.aborted) {
+                reject(new JobCanceledError(jobId));
+                return;
+            }
+            if (code === 0) {
+                resolve();
+                return;
+            }
+            reject(new Error(`transcribe exited with code ${code}: ${stderrTail.slice(-500)}`));
+        });
+    });
+}
+
+async function transcribeAudio(
+    jobId: string,
+    audioPath: string,
+    outputTranscriptPath: string,
+    onProgress?: (fraction: number) => void,
+) {
     const scriptPath = resolveTranscribeScript();
     if (!scriptPath) {
         process.stderr.write("Transcription skipped: transcribe.py not found\n");
@@ -829,7 +1032,7 @@ async function transcribeAudio(jobId: string, audioPath: string, outputTranscrip
     }
 
     try {
-        await execFileForJob(jobId, runtimeEnv.pythonPath, [
+        await runTranscribeProcess(jobId, [
             scriptPath,
             "--audio", audioPath,
             "--output", outputTranscriptPath,
@@ -838,7 +1041,7 @@ async function transcribeAudio(jobId: string, audioPath: string, outputTranscrip
             "--device", runtimeEnv.whisperDevice,
             "--compute-type", runtimeEnv.whisperComputeType,
             "--language", runtimeEnv.whisperLanguage,
-        ], { maxBuffer: 64 * 1024 * 1024 });
+        ], onProgress);
 
         if (existsSync(outputTranscriptPath)) {
             return outputTranscriptPath;
@@ -911,13 +1114,16 @@ async function processClipJob(payload: ClipProcessJobData) {
         }
 
         await mkdir(segmentsRoot, { recursive: true });
-        await updateJobProgress(job.id, {
+        await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.preparing,
             effectiveHardware,
             startedAt: new Date(),
             stage: JobStage.extractClips,
             stageProgress: 0,
-            overallProgress: 5,
+            overallProgress: 3,
+            audioProgress: 0,
+            videoProgress: 0,
+            transcriptProgress: 0,
             message: "Preparing clip extraction",
         });
 
@@ -934,63 +1140,107 @@ async function processClipJob(payload: ClipProcessJobData) {
             }
 
             const segmentPath = join(segmentsRoot, `segment-${String(index + 1).padStart(2, "0")}.mp4`);
-            await encodeSegment(job.id, job.asset.sourcePath, segmentPath, segment.startTime, duration, effectiveHardware, requestedFps);
+            // Segment extraction fills the first 55% of the audio bar (video reuses these clips).
+            const segmentBandLow = (index / segments.length) * 55;
+            const segmentBandHigh = ((index + 1) / segments.length) * 55;
+            await encodeSegment(
+                job.id,
+                job.asset.sourcePath,
+                segmentPath,
+                segment.startTime,
+                duration,
+                effectiveHardware,
+                requestedFps,
+                createBandReporter(job.id, "audioProgress", segmentBandLow, segmentBandHigh),
+            );
             segmentPaths.push(segmentPath);
             segmentDurations.push(duration);
 
-            const progress = Math.round(((index + 1) / segments.length) * 100);
-            await updateJobProgress(job.id, {
+            await enqueueProgressWrite(job.id, {
                 status: PrismaJobStatus.preparing,
                 stage: JobStage.extractClips,
-                stageProgress: progress,
-                overallProgress: Math.min(60, 10 + Math.round(((index + 1) / segments.length) * 50)),
+                stageProgress: Math.round(((index + 1) / segments.length) * 100),
+                overallProgress: Math.round(((index + 1) / segments.length) * 30),
+                audioProgress: Math.round(segmentBandHigh),
                 message: `Encoded segment ${index + 1} of ${segments.length}`,
             });
         }
 
         const audioTransitionDuration = getTransitionDuration(segments, defaultAudioTransitionDurationSeconds);
         const audioTransitionDurations = getUniformTransitionDurations(segmentDurations, audioTransitionDuration);
+        const expectedAudioDuration = getSequenceDuration(segmentDurations, audioTransitionDurations);
 
         await assertJobNotCanceled(job.id);
 
-        await updateJobProgress(job.id, {
+        await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.encoding_audio,
             stage: JobStage.encodeAudio,
             stageProgress: 10,
-            overallProgress: 62,
+            overallProgress: 34,
+            audioProgress: 55,
             message: "Rendering stitched audio artifact",
         });
 
-        await renderAudioArtifact(job.id, segmentPaths, segmentDurations, audioTransitionDurations, audioProgramPath);
+        await renderAudioArtifact(
+            job.id,
+            segmentPaths,
+            segmentDurations,
+            audioTransitionDurations,
+            audioProgramPath,
+            createBandReporter(job.id, "audioProgress", 55, 70),
+        );
 
         await assertJobNotCanceled(job.id);
 
-        await updateJobProgress(job.id, {
+        await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.processing_audio,
             stage: JobStage.normalizeAudio,
             stageProgress: 20,
-            overallProgress: 72,
+            overallProgress: 40,
+            audioProgress: 70,
             message: "Analyzing stitched audio levels",
         });
 
-        const audioLoudnormAnalysis = await analyzeAudioNormalization(job.id, audioProgramPath);
+        const audioLoudnormAnalysis = await analyzeAudioNormalization(
+            job.id,
+            audioProgramPath,
+            expectedAudioDuration,
+            createBandReporter(job.id, "audioProgress", 70, 82),
+        );
 
         await assertJobNotCanceled(job.id);
 
-        await updateJobProgress(job.id, {
+        await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.processing_audio,
             stage: JobStage.normalizeAudio,
             stageProgress: 55,
-            overallProgress: 78,
+            overallProgress: 48,
+            audioProgress: 82,
             message: "Normalizing stitched audio artifact",
         });
 
         try {
-            await normalizeAudioOnly(job.id, audioProgramPath, outputAudioPath, audioLoudnormAnalysis);
+            await normalizeAudioOnly(
+                job.id,
+                audioProgramPath,
+                outputAudioPath,
+                audioLoudnormAnalysis,
+                expectedAudioDuration,
+                createBandReporter(job.id, "audioProgress", 82, 100),
+            );
         }
         finally {
             await rm(audioProgramPath, { force: true });
         }
+
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.processing_audio,
+            stage: JobStage.normalizeAudio,
+            stageProgress: 100,
+            overallProgress: 55,
+            audioProgress: 100,
+            message: "Audio artifact ready",
+        });
 
         const audioOutputStats = await stat(outputAudioPath);
         const partialExpiresAt = new Date();
@@ -1032,7 +1282,23 @@ async function processClipJob(payload: ClipProcessJobData) {
         const videoSegmentDurations = [...segmentDurations];
 
         if (introImageAsset) {
-            await createStillImageClip(job.id, introImageAsset.sourcePath, introClipPath, introDuration, requestedFps);
+            await enqueueProgressWrite(job.id, {
+                status: PrismaJobStatus.encoding_video,
+                stage: JobStage.encodeVideo,
+                stageProgress: 0,
+                overallProgress: 58,
+                videoProgress: 0,
+                message: "Building intro image clip",
+            });
+
+            await createStillImageClip(
+                job.id,
+                introImageAsset.sourcePath,
+                introClipPath,
+                introDuration,
+                requestedFps,
+                createBandReporter(job.id, "videoProgress", 0, 5),
+            );
             videoSegmentPaths.unshift(introClipPath);
             videoSegmentDurations.unshift(introDuration);
         }
@@ -1047,13 +1313,15 @@ async function processClipJob(payload: ClipProcessJobData) {
             videoSegmentDurations,
             introImageAsset ? defaultIntroTransitionDurationSeconds : 0.5,
         );
+        const expectedVideoDuration = getSequenceDuration(videoSegmentDurations, videoTransitionDurations);
 
         if (videoTransitionDuration > 0 && videoSegmentPaths.length > 1) {
-            await updateJobProgress(job.id, {
+            await enqueueProgressWrite(job.id, {
                 status: PrismaJobStatus.encoding_video,
                 stage: JobStage.buildTransitions,
                 stageProgress: 0,
-                overallProgress: 65,
+                overallProgress: 60,
+                videoProgress: 5,
                 message: `Rendering ${videoSegmentPaths.length - 1} video crossfade transition(s)`,
             });
 
@@ -1064,59 +1332,92 @@ async function processClipJob(payload: ClipProcessJobData) {
                 videoProgramPath,
                 videoTransitionDurations,
                 effectiveHardware,
+                createBandReporter(job.id, "videoProgress", 5, 80),
             );
 
             await assertJobNotCanceled(job.id);
 
-            await updateJobProgress(job.id, {
+            await enqueueProgressWrite(job.id, {
                 status: PrismaJobStatus.encoding_video,
                 stage: JobStage.buildTransitions,
                 stageProgress: 100,
-                overallProgress: 72,
+                overallProgress: 75,
+                videoProgress: 80,
                 message: "Transition rendering complete",
             });
         }
         else {
-            await updateJobProgress(job.id, {
+            await enqueueProgressWrite(job.id, {
                 status: PrismaJobStatus.encoding_video,
                 stage: JobStage.encodeVideo,
                 stageProgress: 0,
-                overallProgress: 65,
+                overallProgress: 60,
+                videoProgress: 5,
                 message: "Rendering stitched video artifact",
             });
 
-            await renderConcatenatedVideoArtifact(job.id, videoSegmentPaths, videoSegmentDurations, videoProgramPath, effectiveHardware);
+            await renderConcatenatedVideoArtifact(
+                job.id,
+                videoSegmentPaths,
+                videoSegmentDurations,
+                videoProgramPath,
+                effectiveHardware,
+                createBandReporter(job.id, "videoProgress", 5, 80),
+            );
         }
 
         await assertJobNotCanceled(job.id);
 
-        await updateJobProgress(job.id, {
+        await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.processing_audio,
             stage: JobStage.normalizeAudio,
             stageProgress: 70,
-            overallProgress: 84,
+            overallProgress: 82,
+            videoProgress: 80,
             message: "Analyzing stitched video audio levels",
         });
 
         try {
-            const videoLoudnormAnalysis = await analyzeAudioNormalization(job.id, videoProgramPath);
+            const videoLoudnormAnalysis = await analyzeAudioNormalization(
+                job.id,
+                videoProgramPath,
+                expectedVideoDuration,
+                createBandReporter(job.id, "videoProgress", 80, 90),
+            );
 
             await assertJobNotCanceled(job.id);
 
-            await updateJobProgress(job.id, {
+            await enqueueProgressWrite(job.id, {
                 status: PrismaJobStatus.processing_audio,
                 stage: JobStage.normalizeAudio,
                 stageProgress: 90,
-                overallProgress: 92,
+                overallProgress: 88,
+                videoProgress: 90,
                 message: "Normalizing stitched video audio",
             });
 
-            await normalizeVideoAudio(job.id, videoProgramPath, outputVideoPath, videoLoudnormAnalysis);
+            await normalizeVideoAudio(
+                job.id,
+                videoProgramPath,
+                outputVideoPath,
+                videoLoudnormAnalysis,
+                expectedVideoDuration,
+                createBandReporter(job.id, "videoProgress", 90, 100),
+            );
         }
         finally {
             await rm(videoProgramPath, { force: true });
             await rm(introClipPath, { force: true });
         }
+
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.encoding_video,
+            stage: JobStage.normalizeAudio,
+            stageProgress: 100,
+            overallProgress: 92,
+            videoProgress: 100,
+            message: "Video artifact ready",
+        });
 
         await assertJobNotCanceled(job.id);
 
@@ -1149,16 +1450,32 @@ async function processClipJob(payload: ClipProcessJobData) {
         let transcriptPath: string | null = null;
 
         if (runtimeEnv.transcriptionEnabled) {
-            await updateJobProgress(job.id, {
+            await enqueueProgressWrite(job.id, {
                 stage: JobStage.transcribe,
                 stageProgress: 0,
                 overallProgress: 95,
+                transcriptProgress: 0,
                 message: "Transcribing sermon audio",
             });
 
-            transcriptPath = await transcribeAudio(job.id, outputAudioPath, outputTranscriptPath);
+            transcriptPath = await transcribeAudio(
+                job.id,
+                outputAudioPath,
+                outputTranscriptPath,
+                createBandReporter(job.id, "transcriptProgress", 0, 100),
+            );
 
             await assertJobNotCanceled(job.id);
+
+            if (transcriptPath) {
+                await enqueueProgressWrite(job.id, {
+                    stage: JobStage.transcribe,
+                    stageProgress: 100,
+                    overallProgress: 99,
+                    transcriptProgress: 100,
+                    message: "Transcript ready",
+                });
+            }
         }
 
         const finalArtifacts: Array<{
@@ -1227,7 +1544,7 @@ async function processClipJob(payload: ClipProcessJobData) {
             }),
         ]);
 
-        await updateJobProgress(job.id, {
+        await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.completed,
             finishedAt: new Date(),
             failureReason: null,
@@ -1239,6 +1556,7 @@ async function processClipJob(payload: ClipProcessJobData) {
     }
     finally {
         stopJobCancellationWatcher(payload.jobId);
+        progressWriteChains.delete(payload.jobId);
     }
 }
 

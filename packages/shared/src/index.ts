@@ -106,6 +106,9 @@ export interface JobResponse {
         stage: string;
         stageProgress: number;
         overallProgress: number;
+        audioProgress: number;
+        videoProgress: number;
+        transcriptProgress: number;
         message: string;
         updatedAt: string;
     } | null;

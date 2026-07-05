@@ -273,6 +273,9 @@ export class JobsService {
                     stage: job.progress.stage,
                     stageProgress: job.progress.stageProgress,
                     overallProgress: job.progress.overallProgress,
+                    audioProgress: job.progress.audioProgress,
+                    videoProgress: job.progress.videoProgress,
+                    transcriptProgress: job.progress.transcriptProgress,
                     message: job.progress.message,
                     updatedAt: job.progress.updatedAt.toISOString(),
                 }
