@@ -30,6 +30,17 @@ def format_timestamp(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
+def is_hallucinated_repetition(text):
+    """Detect Whisper's runaway repetition on quiet audio (e.g. a fade-out),
+    where a short phrase repeats many times ("Let's see. Let's see. ..."). Only
+    flags long, low-diversity cues so normal speech is never dropped."""
+    words = text.split()
+    if len(words) < 12:
+        return False
+    unique = {word.lower().strip(".,!?;:'\"") for word in words}
+    return len(unique) <= max(3, int(len(words) * 0.2))
+
+
 def write_transcript(segments, info, output_path):
     """Write a WebVTT (.vtt) transcript with per-segment cue timestamps."""
     total = getattr(info, "duration", 0) or 0
@@ -37,7 +48,7 @@ def write_transcript(segments, info, output_path):
         handle.write("WEBVTT\n\n")
         for segment in segments:
             text = segment.text.strip()
-            if text:
+            if text and not is_hallucinated_repetition(text):
                 start = format_timestamp(segment.start)
                 end = format_timestamp(segment.end)
                 handle.write(f"{start} --> {end}\n{text}\n\n")
@@ -52,7 +63,14 @@ def run(args):
 
     os.makedirs(args.model_dir, exist_ok=True)
     language = None if args.language.lower() == "auto" else args.language
-    transcribe_kwargs = dict(language=language, beam_size=5, vad_filter=True)
+    transcribe_kwargs = dict(
+        language=language,
+        beam_size=5,
+        vad_filter=True,
+        # Stop the model feeding its own output back in, which causes runaway
+        # repetition/hallucination on quiet audio such as fade-outs.
+        condition_on_previous_text=False,
+    )
 
     def build(device, compute_type):
         eprint(f"[transcribe] loading model={args.model} device={device} compute={compute_type}")
