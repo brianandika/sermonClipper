@@ -1444,76 +1444,11 @@ async function processClipJob(payload: ClipProcessJobData) {
             createdAt: new Date().toISOString(),
         }, null, 2));
 
-        // Transcribe the exported audio to a WebVTT (.vtt) transcript (best-effort).
-        // Runs at the end so the MP3/MP4 stay fast; a failure never fails the job.
-        const outputTranscriptPath = join(jobRoot, `${outputAudioFilename.replace(/\.mp3$/i, "")}.vtt`);
-        let transcriptPath: string | null = null;
-
-        if (runtimeEnv.transcriptionEnabled) {
-            await enqueueProgressWrite(job.id, {
-                stage: JobStage.transcribe,
-                stageProgress: 0,
-                overallProgress: 95,
-                transcriptProgress: 0,
-                message: "Transcribing sermon audio",
-            });
-
-            transcriptPath = await transcribeAudio(
-                job.id,
-                outputAudioPath,
-                outputTranscriptPath,
-                createBandReporter(job.id, "transcriptProgress", 0, 100),
-            );
-
-            await assertJobNotCanceled(job.id);
-
-            if (transcriptPath) {
-                await enqueueProgressWrite(job.id, {
-                    stage: JobStage.transcribe,
-                    stageProgress: 100,
-                    overallProgress: 99,
-                    transcriptProgress: 100,
-                    message: "Transcript ready",
-                });
-            }
-        }
-
-        const finalArtifacts: Array<{
-            jobId: string;
-            type: string;
-            filename: string;
-            storagePath: string;
-            sizeBytes?: bigint;
-        }> = [
-            {
-                jobId: job.id,
-                type: "video",
-                filename: basename(outputVideoPath),
-                storagePath: outputVideoPath,
-                sizeBytes: BigInt(outputStats.size),
-            },
-            {
-                jobId: job.id,
-                type: "manifest",
-                filename: basename(processingManifestPath),
-                storagePath: processingManifestPath,
-            },
-        ];
-
-        if (transcriptPath) {
-            const transcriptStats = await stat(transcriptPath);
-            finalArtifacts.push({
-                jobId: job.id,
-                type: "transcript",
-                filename: basename(transcriptPath),
-                storagePath: transcriptPath,
-                sizeBytes: BigInt(transcriptStats.size),
-            });
-        }
-
         const expiresAt = new Date();
         expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
 
+        // Publish the finished video result now so it is downloadable immediately,
+        // before the (slower) transcription step runs.
         await prisma.$transaction([
             prisma.result.upsert({
                 where: { jobId: job.id },
@@ -1521,7 +1456,6 @@ async function processClipJob(payload: ClipProcessJobData) {
                     sessionId: job.sessionId,
                     videoPath: outputVideoPath,
                     audioPath: outputAudioPath,
-                    transcriptPath,
                     manifestPath: processingManifestPath,
                     sizeBytes: BigInt(outputStats.size),
                     duration: outputDuration,
@@ -1532,7 +1466,6 @@ async function processClipJob(payload: ClipProcessJobData) {
                     sessionId: job.sessionId,
                     videoPath: outputVideoPath,
                     audioPath: outputAudioPath,
-                    transcriptPath,
                     manifestPath: processingManifestPath,
                     sizeBytes: BigInt(outputStats.size),
                     duration: outputDuration,
@@ -1540,9 +1473,73 @@ async function processClipJob(payload: ClipProcessJobData) {
                 },
             }),
             prisma.processingArtifact.createMany({
-                data: finalArtifacts,
+                data: [
+                    {
+                        jobId: job.id,
+                        type: "video",
+                        filename: basename(outputVideoPath),
+                        storagePath: outputVideoPath,
+                        sizeBytes: BigInt(outputStats.size),
+                    },
+                    {
+                        jobId: job.id,
+                        type: "manifest",
+                        filename: basename(processingManifestPath),
+                        storagePath: processingManifestPath,
+                    },
+                ],
             }),
         ]);
+
+        // Transcribe the exported audio to a WebVTT (.vtt) transcript (best-effort).
+        // Runs after the video is published; a failure never fails the job.
+        const outputTranscriptPath = join(jobRoot, `${outputAudioFilename.replace(/\.mp3$/i, "")}.vtt`);
+
+        if (runtimeEnv.transcriptionEnabled) {
+            await enqueueProgressWrite(job.id, {
+                stage: JobStage.transcribe,
+                stageProgress: 0,
+                overallProgress: 95,
+                transcriptProgress: 0,
+                message: "Transcribing sermon audio",
+            });
+
+            const transcriptPath = await transcribeAudio(
+                job.id,
+                outputAudioPath,
+                outputTranscriptPath,
+                createBandReporter(job.id, "transcriptProgress", 0, 100),
+            );
+
+            await assertJobNotCanceled(job.id);
+
+            if (transcriptPath) {
+                const transcriptStats = await stat(transcriptPath);
+                await prisma.$transaction([
+                    prisma.result.update({
+                        where: { jobId: job.id },
+                        data: { transcriptPath },
+                    }),
+                    prisma.processingArtifact.create({
+                        data: {
+                            jobId: job.id,
+                            type: "transcript",
+                            filename: basename(transcriptPath),
+                            storagePath: transcriptPath,
+                            sizeBytes: BigInt(transcriptStats.size),
+                        },
+                    }),
+                ]);
+
+                await enqueueProgressWrite(job.id, {
+                    stage: JobStage.transcribe,
+                    stageProgress: 100,
+                    overallProgress: 99,
+                    transcriptProgress: 100,
+                    message: "Transcript ready",
+                });
+            }
+        }
 
         await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.completed,

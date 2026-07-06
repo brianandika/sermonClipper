@@ -65,7 +65,9 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   }, [result]);
 
   useEffect(() => {
-    if (currentResult.videoPath || ['completed', 'failed', 'canceled', 'expired'].includes(currentJob.status)) {
+    // Keep polling until the job is terminal so both the video (published before
+    // transcription) and the transcript (added after) are picked up.
+    if (['completed', 'failed', 'canceled', 'expired'].includes(currentJob.status)) {
       return;
     }
 
