@@ -81,6 +81,16 @@ export const getAssetTranscriptText = async (assetId: string): Promise<string> =
   return data as string;
 };
 
+// Overwrite an asset's transcript with edited cues (typo fixes). Writes in place,
+// so a shorts source derived from a sermon also corrects the sermon transcript.
+export const updateAssetTranscript = async (
+  assetId: string,
+  cues: { start: number; end: number; text: string }[],
+): Promise<Asset> => {
+  const { data } = await api.put(`/assets/${assetId}/transcript`, { cues });
+  return data;
+};
+
 // Jobs
 export const createJob = async (jobData: {
   assetId: string;

@@ -11,6 +11,7 @@ import {
   getJobs,
   getResult,
   getResultArtifact,
+  updateAssetTranscript,
   uploadAsset,
 } from '../api';
 
@@ -331,6 +332,12 @@ export default function ShortsFlow({
   const [cuesError, setCuesError] = useState<string | null>(null);
   const [moments, setMoments] = useState<Moment[]>([]);
 
+  // Transcript editing state
+  const [editingTranscript, setEditingTranscript] = useState(false);
+  const [draftCues, setDraftCues] = useState<Cue[]>([]);
+  const [savingTranscript, setSavingTranscript] = useState(false);
+  const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
+
   const phase: 'picker' | 'needsTranscript' | 'editor' = !source
     ? 'picker'
     : source.transcriptPath
@@ -419,7 +426,41 @@ export default function ShortsFlow({
   useEffect(() => {
     setMoments([]);
     setCues([]);
+    setEditingTranscript(false);
   }, [source?.assetId]);
+
+  // ---- Transcript editing handlers ------------------------------------------
+  const openTranscriptEditor = () => {
+    setDraftCues(cues.map((cue) => ({ ...cue })));
+    setTranscriptSaveError(null);
+    setEditingTranscript(true);
+  };
+
+  const updateDraftCue = (index: number, text: string) => {
+    setDraftCues((prev) => prev.map((cue, i) => (i === index ? { ...cue, text } : cue)));
+  };
+
+  const removeDraftCue = (index: number) => {
+    setDraftCues((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const saveTranscript = async () => {
+    if (!source) return;
+    setSavingTranscript(true);
+    setTranscriptSaveError(null);
+    try {
+      const updated = await updateAssetTranscript(source.assetId, draftCues);
+      // Re-read the canonical saved VTT so the panes match the file exactly.
+      const text = await getAssetTranscriptText(source.assetId);
+      setCues(parseVtt(text));
+      onSourceChange(updated);
+      setEditingTranscript(false);
+    } catch (err) {
+      setTranscriptSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingTranscript(false);
+    }
+  };
 
   // ---- Source picker handlers ------------------------------------------------
   const useSermon = async (sermonJob: Job) => {
@@ -685,13 +726,55 @@ export default function ShortsFlow({
             <h1 className="shorts-title">Build 9:16 vertical clips</h1>
             <p className="shorts-subtitle">Source: {source?.originalFilename}</p>
           </div>
-          <button type="button" className="btn btn-secondary" onClick={changeSource}>
-            Change source
-          </button>
+          <div className="shorts-header-actions">
+            <button type="button" className="btn btn-secondary" onClick={openTranscriptEditor} disabled={cues.length === 0 || editingTranscript}>
+              Edit transcript
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={changeSource}>
+              Change source
+            </button>
+          </div>
         </div>
       </header>
 
       {cuesError && <p className="shorts-error">Couldn’t load the transcript: {cuesError}</p>}
+
+      {editingTranscript && (
+        <section className="shorts-transcript-editor">
+          <div className="shorts-transcript-editor-head">
+            <h2 className="shorts-section-title">Edit transcript</h2>
+            <div className="shorts-header-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setEditingTranscript(false)} disabled={savingTranscript}>
+                Cancel
+              </button>
+              <button type="button" className="btn" onClick={saveTranscript} disabled={savingTranscript}>
+                {savingTranscript ? 'Saving…' : 'Save transcript'}
+              </button>
+            </div>
+          </div>
+          <p className="shorts-hint">
+            Fix typos and spelling — timestamps stay the same. Saved changes apply to every short (and update the sermon transcript).
+          </p>
+          {transcriptSaveError && <p className="shorts-error">{transcriptSaveError}</p>}
+          <div className="shorts-transcript-edit-list">
+            {draftCues.map((cue, index) => (
+              <div key={`draft-${index}`} className="shorts-transcript-edit-row">
+                <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
+                <input
+                  className="shorts-transcript-edit-input"
+                  type="text"
+                  value={cue.text}
+                  onChange={(event) => updateDraftCue(index, event.target.value)}
+                  aria-label={`Cue at ${formatTimecode(cue.start)}`}
+                />
+                <button type="button" className="btn remove-clip" title="Delete this cue" onClick={() => removeDraftCue(index)}>
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="shorts-editor-toolbar">
         <button type="button" className="btn add-clip" onClick={addBlankMoment}>Add another short</button>

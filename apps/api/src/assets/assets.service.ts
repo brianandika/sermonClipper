@@ -1,11 +1,47 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import type { Asset } from "@prisma/client";
+import type { TranscriptCue } from "@sermon-clipper/shared";
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import type { Express } from "express";
 import { env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
+
+function formatVttTime(seconds: number): string {
+    const clamped = Math.max(0, seconds);
+    let hours = Math.floor(clamped / 3600);
+    let minutes = Math.floor((clamped % 3600) / 60);
+    let secs = Math.floor(clamped % 60);
+    let ms = Math.round((clamped - Math.floor(clamped)) * 1000);
+    if (ms === 1000) {
+        ms = 0;
+        secs += 1;
+        if (secs === 60) {
+            secs = 0;
+            minutes += 1;
+            if (minutes === 60) {
+                minutes = 0;
+                hours += 1;
+            }
+        }
+    }
+    const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+    return `${pad(hours)}:${pad(minutes)}:${pad(secs)}.${pad(ms, 3)}`;
+}
+
+// Serialize cues into a canonical WebVTT. Drops empty/invalid cues, orders by
+// start, and neutralizes anything that would break the cue grammar.
+function buildVtt(cues: TranscriptCue[]): string {
+    const blocks = [...cues]
+        .filter((cue) => Number.isFinite(cue.start) && Number.isFinite(cue.end) && cue.end > cue.start)
+        .sort((a, b) => a.start - b.start)
+        .map((cue) => ({ ...cue, text: cue.text.replace(/\r?\n+/g, " ").replace(/-->/g, "->").trim() }))
+        .filter((cue) => cue.text.length > 0)
+        .map((cue) => `${formatVttTime(cue.start)} --> ${formatVttTime(cue.end)}\n${cue.text}`);
+
+    return blocks.length > 0 ? `WEBVTT\n\n${blocks.join("\n\n")}\n` : "WEBVTT\n";
+}
 
 @Injectable()
 export class AssetsService {
@@ -68,6 +104,27 @@ export class AssetsService {
             where: { id: assetId },
             data,
         });
+    }
+
+    // Overwrite the asset's transcript with edited cues (typo/spelling fixes).
+    // Writes canonical WebVTT to the existing transcriptPath IN PLACE — so a
+    // shorts source derived from a sermon also corrects that sermon's transcript.
+    async updateTranscript(sessionId: string, assetId: string, cues: TranscriptCue[]) {
+        const asset = await this.getOwnedAsset(sessionId, assetId);
+        const targetPath = asset.transcriptPath?.trim()
+            || join(this.getAssetBaseDir(sessionId, assetId), "transcript.vtt");
+
+        await mkdir(dirname(targetPath), { recursive: true });
+        await writeFile(targetPath, buildVtt(cues), "utf8");
+
+        if (asset.transcriptPath !== targetPath) {
+            return this.prisma.asset.update({
+                where: { id: assetId },
+                data: { transcriptPath: targetPath },
+            });
+        }
+
+        return asset;
     }
 
     // Derive a "shorts source" asset from a completed sermon job: it references

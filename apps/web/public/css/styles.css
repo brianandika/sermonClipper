@@ -1044,6 +1044,66 @@ video, audio {
   width: 100%;
 }
 
+.shorts-header-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.shorts-transcript-editor {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+  background: #f8fafc;
+}
+
+.shorts-transcript-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
+.shorts-transcript-editor-head .shorts-section-title {
+  margin: 0;
+}
+
+.shorts-transcript-edit-list {
+  max-height: 460px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.shorts-transcript-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.shorts-transcript-edit-row .shorts-cue-time {
+  flex: 0 0 3.2rem;
+}
+
+.shorts-transcript-edit-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.shorts-transcript-edit-row .btn.remove-clip {
+  flex: 0 0 auto;
+  padding: 0.3rem 0.55rem;
+}
+
 .shorts-prep-actions {
   display: flex;
   gap: 0.75rem;

@@ -75,6 +75,18 @@ export interface PeaksResponse {
     sampleRate: number;
 }
 
+export interface TranscriptCue {
+    start: number;
+    end: number;
+    text: string;
+}
+
+// Body for editing an asset's transcript (typo/spelling fixes). The API writes a
+// canonical WebVTT to the asset's transcriptPath in place.
+export interface UpdateTranscriptRequest {
+    cues: TranscriptCue[];
+}
+
 // Discriminates the three worker pipelines. Absent ⇒ "sermon" (the original
 // landscape trim/cut flow), preserving backward compatibility with existing jobs.
 export type JobKind = "sermon" | "transcribeSource" | "short";

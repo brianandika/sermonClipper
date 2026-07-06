@@ -1,10 +1,12 @@
 import {
     BadRequestException,
+    Body,
     Controller,
     Get,
     NotFoundException,
     Param,
     Post,
+    Put,
     Req,
     Res,
     UploadedFile,
@@ -25,6 +27,7 @@ import { env } from "../config/env";
 import { SessionService } from "../sessions/session.service";
 import { AssetMediaService } from "./asset-media.service";
 import { AssetsService } from "./assets.service";
+import { UpdateTranscriptDto } from "./update-transcript.dto";
 
 const uploadTempDir = join(env.workRoot, "_upload_tmp");
 
@@ -165,6 +168,17 @@ export class AssetsController {
 
         response.type("text/vtt");
         response.sendFile(asset.transcriptPath);
+    }
+
+    @Put(":assetId/transcript")
+    async updateAssetTranscript(
+        @Req() request: Request,
+        @Param("assetId") assetId: string,
+        @Body() body: UpdateTranscriptDto,
+    ): Promise<AssetResponse> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const asset = await this.assetsService.updateTranscript(session.id, assetId, body.cues);
+        return this.toAssetResponse(asset);
     }
 
     @Get(":assetId/fps")
