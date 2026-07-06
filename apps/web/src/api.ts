@@ -63,6 +63,17 @@ export const getAssetSourceUrl = (assetId: string) => {
   return `${API_BASE}/assets/${assetId}/source`;
 };
 
+export const getAssetTranscriptUrl = (assetId: string) => {
+  return `${API_BASE}/assets/${assetId}/transcript`;
+};
+
+// Fetch the raw WebVTT text of an asset's on-demand transcript (used by the
+// Shorts tab to render clickable cues). 404s until a transcribeSource job runs.
+export const getAssetTranscriptText = async (assetId: string): Promise<string> => {
+  const { data } = await api.get(`/assets/${assetId}/transcript`, { responseType: 'text' });
+  return data as string;
+};
+
 // Jobs
 export const createJob = async (jobData: {
   assetId: string;
@@ -79,6 +90,27 @@ export const createJob = async (jobData: {
   hardware?: HardwareOption;
 }) => {
   const { data } = await api.post('/jobs', jobData);
+  return data;
+};
+
+// Transcribe an uploaded source video on demand (no clip range). Prerequisite
+// for building shorts / picking moments from the transcript.
+export const createTranscribeJob = async (assetId: string): Promise<Job> => {
+  const { data } = await api.post('/jobs', { assetId, kind: 'transcribeSource' });
+  return data;
+};
+
+// Create one 9:16 vertical short from a moment of the source.
+export const createShortJob = async (params: {
+  assetId: string;
+  startTime: number;
+  endTime: number;
+  cropX: number;
+  zoom: number;
+  captions: boolean;
+  outputVideoFilename?: string;
+}): Promise<Job> => {
+  const { data } = await api.post('/jobs', { kind: 'short', ...params });
   return data;
 };
 

@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react';
 import { bootstrapSession } from './api';
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
+import ShortsFlow from './components/ShortsFlow';
 import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
 import { Asset, Job, Result, Session } from './types';
 
-type AppFlow = 'upload' | 'editor' | 'jobs' | 'results';
+type AppFlow = 'upload' | 'editor' | 'shorts' | 'jobs' | 'results';
 
 interface NavItem {
   key: AppFlow;
@@ -84,6 +85,12 @@ function App() {
       disabled: !asset,
     },
     {
+      key: 'shorts',
+      label: 'Shorts',
+      description: asset ? 'Make 9:16 vertical clips' : 'Upload media first',
+      disabled: !asset,
+    },
+    {
       key: 'jobs',
       label: 'Jobs',
       description: 'Monitor queue activity',
@@ -99,7 +106,7 @@ function App() {
   const pendingFlowLabel = navItems.find((item) => item.key === pendingFlow)?.label ?? 'another page';
 
   const completeNavigation = (nextFlow: AppFlow) => {
-    if (nextFlow === 'editor' && !asset) {
+    if ((nextFlow === 'editor' || nextFlow === 'shorts') && !asset) {
       return;
     }
     if (nextFlow === 'results' && (!result || !job)) {
@@ -189,6 +196,9 @@ function App() {
         {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} />}
         {flow === 'editor' && asset && (
           <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleEditorCancel} />
+        )}
+        {flow === 'shorts' && asset && (
+          <ShortsFlow asset={asset} />
         )}
         {flow === 'jobs' && (
           <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onReset={handleReset} />

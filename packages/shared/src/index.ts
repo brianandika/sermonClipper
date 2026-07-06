@@ -62,6 +62,7 @@ export interface AssetResponse {
     sourcePath: string;
     fps: number | null;
     duration: number | null;
+    transcriptPath: string | null;
     status: string;
     createdAt: string;
     updatedAt: string;
@@ -74,7 +75,12 @@ export interface PeaksResponse {
     sampleRate: number;
 }
 
+// Discriminates the three worker pipelines. Absent ⇒ "sermon" (the original
+// landscape trim/cut flow), preserving backward compatibility with existing jobs.
+export type JobKind = "sermon" | "transcribeSource" | "short";
+
 export interface CreateJobRequest {
+    kind?: JobKind;
     startTime: number;
     endTime: number;
     clipStarts?: number[];
@@ -86,6 +92,11 @@ export interface CreateJobRequest {
     transitionDuration?: number;
     fps?: number;
     hardware?: HardwareOption;
+    // "short" only: horizontal crop position (0..1) and zoom (>=1) for the
+    // 9:16 window, plus whether to burn in captions (default true).
+    cropX?: number;
+    zoom?: number;
+    captions?: boolean;
 }
 
 export interface JobResponse {

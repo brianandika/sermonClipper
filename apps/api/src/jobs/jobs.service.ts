@@ -73,6 +73,16 @@ function validateClipRanges(payload: CreateJobDto) {
     }
 }
 
+function validateShortRange(payload: CreateJobDto) {
+    if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
+        throw new BadRequestException("A short requires numeric startTime and endTime");
+    }
+
+    if (payload.startTime >= payload.endTime) {
+        throw new BadRequestException("startTime must be less than endTime");
+    }
+}
+
 @Injectable()
 export class JobsService {
     constructor(
@@ -82,10 +92,21 @@ export class JobsService {
     ) { }
 
     async create(sessionId: string, assetId: string, payload: CreateJobDto) {
-        validateClipRanges(payload);
+        const kind = payload.kind ?? "sermon";
+
+        if (kind === "sermon") {
+            validateClipRanges(payload);
+        }
+        else if (kind === "short") {
+            validateShortRange(payload);
+        }
+        // transcribeSource has no clip range to validate.
 
         const requestedHardware = (payload.hardware ?? HardwareOption.auto) as HardwareOption;
         const resolution = await this.jobHardwareService.resolve(requestedHardware);
+        // Transcription never encodes video, so keep it off the (scarce) GPU
+        // encode queue regardless of the resolved hardware.
+        const queueName = kind === "transcribeSource" ? QUEUE_NAMES.clipProcess : resolution.queueName;
 
         const job = await this.prisma.job.create({
             data: {
@@ -95,7 +116,7 @@ export class JobsService {
                 requestedHardware,
                 effectiveHardware: resolution.effectiveHardware,
                 payloadJson: payload as unknown as Prisma.InputJsonValue,
-                queueName: resolution.queueName,
+                queueName,
                 progress: {
                     create: {
                         stage: JobStage.extractClips,
@@ -112,7 +133,7 @@ export class JobsService {
         });
 
         try {
-            await this.clipProcessQueueService.enqueue(resolution.queueName, { jobId: job.id });
+            await this.clipProcessQueueService.enqueue(queueName, { jobId: job.id });
         }
         catch (error) {
             return this.prisma.job.update({

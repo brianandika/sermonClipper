@@ -13,10 +13,13 @@ export interface Asset {
   sourcePath: string;
   fps: number | null;
   duration: number | null;
+  transcriptPath: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type JobKind = 'sermon' | 'transcribeSource' | 'short';
 
 export interface Clip {
   id?: string;
@@ -52,6 +55,7 @@ export interface Job {
   effectiveHardware: string | null;
   queueName: string;
   payload: {
+    kind?: JobKind;
     startTime: number;
     endTime: number;
     clipStarts?: number[];
@@ -63,6 +67,9 @@ export interface Job {
     transitionDuration?: number;
     fps?: number;
     hardware?: HardwareOption;
+    cropX?: number;
+    zoom?: number;
+    captions?: boolean;
   };
   failureReason: string | null;
   createdAt: string;

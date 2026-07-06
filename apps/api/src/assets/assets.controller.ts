@@ -2,6 +2,7 @@ import {
     BadRequestException,
     Controller,
     Get,
+    NotFoundException,
     Param,
     Post,
     Req,
@@ -55,6 +56,7 @@ export class AssetsController {
         sourcePath: string;
         fps: number | null;
         duration: number | null;
+        transcriptPath: string | null;
         status: string;
         createdAt: Date;
         updatedAt: Date;
@@ -68,6 +70,7 @@ export class AssetsController {
             sourcePath: asset.sourcePath,
             fps: asset.fps,
             duration: asset.duration,
+            transcriptPath: asset.transcriptPath,
             status: asset.status,
             createdAt: asset.createdAt.toISOString(),
             updatedAt: asset.updatedAt.toISOString(),
@@ -133,6 +136,23 @@ export class AssetsController {
 
         response.type(asset.mimeType || "application/octet-stream");
         response.sendFile(asset.sourcePath);
+    }
+
+    @Get(":assetId/transcript")
+    async getAssetTranscript(
+        @Req() request: Request,
+        @Res() response: Response,
+        @Param("assetId") assetId: string,
+    ): Promise<void> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const asset = await this.assetsService.getOwnedAsset(session.id, assetId);
+
+        if (!asset.transcriptPath) {
+            throw new NotFoundException("Transcript is not ready yet");
+        }
+
+        response.type("text/vtt");
+        response.sendFile(asset.transcriptPath);
     }
 
     @Get(":assetId/fps")

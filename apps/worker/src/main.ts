@@ -1,14 +1,15 @@
 import "dotenv/config";
 import "reflect-metadata";
-import { copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { execFile, spawn } from "node:child_process";
 import IORedis from "ioredis";
 import { PrismaClient, JobStatus as PrismaJobStatus, HardwareOption } from "@prisma/client";
-import { JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type QueueName } from "@sermon-clipper/shared";
+import { JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type JobKind, type QueueName } from "@sermon-clipper/shared";
+import { buildAssFromVtt, buildShortVideoFilter, clamp, computeShortCrop } from "./captions";
 
 const execFileAsync = promisify(execFile);
 const defaultCpuConcurrency = Math.max(1, Math.min(4, availableParallelism()));
@@ -722,6 +723,47 @@ async function extractAudio(jobId: string, videoPath: string, audioPath: string)
         "copy",
         audioPath,
     ]);
+}
+
+// Extract a 16 kHz mono PCM WAV — the format faster-whisper decodes most
+// reliably — for the standalone transcribeSource pipeline.
+async function extractAudioForTranscription(jobId: string, videoPath: string, audioPath: string) {
+    await runFfmpeg(jobId, [
+        "-hide_banner",
+        "-y",
+        "-i",
+        videoPath,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        audioPath,
+    ]);
+}
+
+// Whether this ffmpeg build exposes the libass-backed "ass" filter needed to
+// burn captions. Probed once and cached, mirroring JobHardwareService's
+// capability caching in the API. When absent, shorts still encode — just
+// without captions — and the result message records the fallback.
+let assCapabilityPromise: Promise<boolean> | null = null;
+
+async function canBurnCaptions(): Promise<boolean> {
+    if (!assCapabilityPromise) {
+        assCapabilityPromise = (async () => {
+            try {
+                const { stdout } = await execFileAsync(runtimeEnv.ffmpegPath, ["-hide_banner", "-filters"]);
+                return /\bass\b/.test(stdout);
+            }
+            catch {
+                return false;
+            }
+        })();
+    }
+
+    return assCapabilityPromise;
 }
 
 function getSequenceDuration(segmentDurations: number[], transitionDurations: number[]) {
@@ -1557,6 +1599,299 @@ async function processClipJob(payload: ClipProcessJobData) {
     }
 }
 
+// transcribeSource: transcribe an uploaded source video on demand so shorts can
+// be built without first running a full sermon job. Writes the .vtt next to the
+// asset source and records Asset.transcriptPath. No Result row. Unlike the
+// sermon path's best-effort transcription, a failure here is fatal — a short
+// needs the transcript to pick moments and (optionally) burn captions.
+async function processTranscribeSourceJob(payload: ClipProcessJobData) {
+    await assertJobNotCanceled(payload.jobId);
+    startJobCancellationWatcher(payload.jobId);
+
+    try {
+        const job = await prisma.job.findUnique({
+            where: { id: payload.jobId },
+            include: { asset: true },
+        });
+
+        if (!job) {
+            throw new Error(`Job ${payload.jobId} not found`);
+        }
+
+        if (!runtimeEnv.transcriptionEnabled) {
+            throw new Error("Transcription is disabled on this worker (ENABLE_TRANSCRIPTION=false)");
+        }
+
+        const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
+        const jobRoot = getJobRoot(job.sessionId, job.id);
+        const workingAudioPath = join(jobRoot, "source-audio.wav");
+        // Store the transcript alongside the asset source so it survives beyond
+        // this transient job and can be reused by every short of this asset.
+        const transcriptPath = join(dirname(job.asset.sourcePath), "transcript.vtt");
+
+        await mkdir(jobRoot, { recursive: true });
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.preparing,
+            effectiveHardware,
+            startedAt: new Date(),
+            stage: JobStage.extractClips,
+            stageProgress: 0,
+            overallProgress: 5,
+            transcriptProgress: 0,
+            message: "Extracting audio for transcription",
+        });
+
+        await extractAudioForTranscription(job.id, job.asset.sourcePath, workingAudioPath);
+
+        await assertJobNotCanceled(job.id);
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.processing_audio,
+            stage: JobStage.transcribe,
+            stageProgress: 10,
+            overallProgress: 20,
+            transcriptProgress: 0,
+            message: "Transcribing source audio",
+        });
+
+        let producedTranscript: string | null = null;
+        try {
+            producedTranscript = await transcribeAudio(
+                job.id,
+                workingAudioPath,
+                transcriptPath,
+                createBandReporter(job.id, "transcriptProgress", 0, 100),
+            );
+        }
+        finally {
+            await rm(workingAudioPath, { force: true });
+        }
+
+        await assertJobNotCanceled(job.id);
+
+        if (!producedTranscript) {
+            throw new Error("Transcription produced no transcript for the source video");
+        }
+
+        await prisma.asset.update({
+            where: { id: job.assetId },
+            data: { transcriptPath: producedTranscript },
+        });
+
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.completed,
+            finishedAt: new Date(),
+            failureReason: null,
+            stage: JobStage.complete,
+            stageProgress: 100,
+            overallProgress: 100,
+            transcriptProgress: 100,
+            message: "Source transcript ready",
+        });
+    }
+    finally {
+        stopJobCancellationWatcher(payload.jobId);
+        progressWriteChains.delete(payload.jobId);
+    }
+}
+
+// short: single-pass FFmpeg — crop the 9:16 window from the source, scale to
+// 1080x1920, optionally burn captions sliced from the asset transcript, and
+// encode one MP4. No MP3, no re-transcription, no two-pass loudnorm. The Result
+// is written once at completion with a real videoPath (no early sentinel).
+async function processShortJob(payload: ClipProcessJobData) {
+    await assertJobNotCanceled(payload.jobId);
+    startJobCancellationWatcher(payload.jobId);
+
+    try {
+        const job = await prisma.job.findUnique({
+            where: { id: payload.jobId },
+            include: { asset: true },
+        });
+
+        if (!job) {
+            throw new Error(`Job ${payload.jobId} not found`);
+        }
+
+        const request = job.payloadJson as unknown as CreateJobRequest;
+        const startTime = request.startTime;
+        const endTime = request.endTime;
+        const duration = getDurationSeconds(startTime, endTime);
+
+        if (!Number.isFinite(duration) || duration <= 0) {
+            throw new Error("Short requires a positive [startTime, endTime] range");
+        }
+
+        const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
+        const zoom = request.zoom && request.zoom >= 1 ? request.zoom : 1;
+        const cropX = clamp(request.cropX ?? 0.5, 0, 1);
+        const wantCaptions = request.captions !== false;
+        const jobRoot = getJobRoot(job.sessionId, job.id);
+        const assFilePath = join(jobRoot, "captions.ass");
+        const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "short-video");
+        const outputVideoPath = join(jobRoot, outputVideoFilename);
+
+        await mkdir(jobRoot, { recursive: true });
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.preparing,
+            effectiveHardware,
+            startedAt: new Date(),
+            stage: JobStage.extractClips,
+            stageProgress: 0,
+            overallProgress: 5,
+            videoProgress: 0,
+            message: "Preparing vertical clip",
+        });
+
+        const media = await detectMediaProperties(job.id, job.asset.sourcePath);
+        const crop = computeShortCrop(media.width, media.height, zoom, cropX);
+
+        // Resolve captions: needs the request flag, an asset transcript, cues in
+        // range, and libass support. Any miss degrades to a caption-less encode.
+        let captionsApplied = false;
+        let captionNote = "";
+
+        if (wantCaptions) {
+            const libassReady = await canBurnCaptions();
+            if (!libassReady) {
+                captionNote = "captions skipped: libass unavailable";
+            }
+            else if (!job.asset.transcriptPath || !existsSync(job.asset.transcriptPath)) {
+                captionNote = "captions skipped: no source transcript";
+            }
+            else {
+                const vtt = await readFile(job.asset.transcriptPath, "utf8");
+                const ass = buildAssFromVtt(vtt, startTime, endTime);
+                if (ass.cueCount > 0) {
+                    await writeFile(assFilePath, ass.content);
+                    captionsApplied = true;
+                }
+                else {
+                    captionNote = "captions skipped: no transcript lines in range";
+                }
+            }
+        }
+
+        const videoFilter = buildShortVideoFilter(crop, captionsApplied ? assFilePath : undefined);
+
+        await assertJobNotCanceled(job.id);
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.encoding_video,
+            stage: JobStage.encodeVideo,
+            stageProgress: 0,
+            overallProgress: 15,
+            videoProgress: 5,
+            message: captionsApplied ? "Encoding vertical clip with captions" : "Encoding vertical clip",
+        });
+
+        try {
+            await runFfmpeg(job.id, [
+                "-hide_banner",
+                "-y",
+                "-ss",
+                String(startTime),
+                "-i",
+                job.asset.sourcePath,
+                "-t",
+                String(duration),
+                "-vf",
+                videoFilter,
+                ...getVideoEncodingArgs(effectiveHardware),
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                outputVideoPath,
+            ], {
+                totalDurationSec: duration,
+                onProgress: createBandReporter(job.id, "videoProgress", 5, 100),
+            });
+        }
+        finally {
+            await rm(assFilePath, { force: true });
+        }
+
+        await assertJobNotCanceled(job.id);
+
+        const outputStats = await stat(outputVideoPath);
+        const outputDuration = await detectOutputDuration(job.id, outputVideoPath);
+        const expiresAt = new Date();
+        expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
+
+        // Write the Result once, at completion, with a real videoPath — video-only
+        // (audioPath/manifestPath stay null; the API 404s those artifacts).
+        await prisma.$transaction([
+            prisma.result.upsert({
+                where: { jobId: job.id },
+                update: {
+                    sessionId: job.sessionId,
+                    videoPath: outputVideoPath,
+                    sizeBytes: BigInt(outputStats.size),
+                    duration: outputDuration,
+                    expiresAt,
+                },
+                create: {
+                    jobId: job.id,
+                    sessionId: job.sessionId,
+                    videoPath: outputVideoPath,
+                    sizeBytes: BigInt(outputStats.size),
+                    duration: outputDuration,
+                    expiresAt,
+                },
+            }),
+            prisma.processingArtifact.create({
+                data: {
+                    jobId: job.id,
+                    type: "video",
+                    filename: basename(outputVideoPath),
+                    storagePath: outputVideoPath,
+                    sizeBytes: BigInt(outputStats.size),
+                },
+            }),
+        ]);
+
+        await enqueueProgressWrite(job.id, {
+            status: PrismaJobStatus.completed,
+            finishedAt: new Date(),
+            failureReason: null,
+            stage: JobStage.complete,
+            stageProgress: 100,
+            overallProgress: 100,
+            videoProgress: 100,
+            message: captionsApplied
+                ? "Short ready"
+                : (captionNote ? `Short ready (${captionNote})` : "Short ready"),
+        });
+    }
+    finally {
+        stopJobCancellationWatcher(payload.jobId);
+        progressWriteChains.delete(payload.jobId);
+    }
+}
+
+// Route a job to its pipeline by the payload's `kind` discriminator. Absent or
+// "sermon" ⇒ the original landscape flow. The BullMQ message is only { jobId },
+// so we read the kind from the persisted job row.
+async function dispatchJob(payload: ClipProcessJobData) {
+    const job = await prisma.job.findUnique({
+        where: { id: payload.jobId },
+        select: { payloadJson: true },
+    });
+
+    const kind = (job?.payloadJson as { kind?: JobKind } | null)?.kind;
+
+    if (kind === "transcribeSource") {
+        await processTranscribeSourceJob(payload);
+        return;
+    }
+
+    if (kind === "short") {
+        await processShortJob(payload);
+        return;
+    }
+
+    await processClipJob(payload);
+}
+
 function getEnabledQueues() {
     if (runtimeEnv.workerMode === "all") {
         return [QUEUE_NAMES.clipProcess, QUEUE_NAMES.gpuEncode] as const;
@@ -1584,7 +1919,7 @@ async function createQueueWorker(queueName: QueueName, connection: IORedis) {
         queueName,
         async (bullJob) => {
             try {
-                await processClipJob(bullJob.data);
+                await dispatchJob(bullJob.data);
             }
             catch (error) {
                 const reason = error instanceof Error ? error.message : String(error);

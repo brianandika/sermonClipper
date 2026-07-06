@@ -47,6 +47,7 @@ model Asset {
   fileSize         BigInt
   sourcePath       String
   peaksPath        String?
+  transcriptPath   String?
   fps              Float?
   duration         Float?
   status           String
