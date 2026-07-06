@@ -125,6 +125,6 @@ export const getResult = async (jobId: string): Promise<Result> => {
   return data;
 };
 
-export const getResultArtifact = (resultId: string, type: 'audio' | 'video') => {
+export const getResultArtifact = (resultId: string, type: 'audio' | 'video' | 'transcript') => {
   return `${API_BASE}/results/${resultId}/${type}`;
 };

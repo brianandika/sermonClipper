@@ -73,6 +73,9 @@ export interface Job {
     stage: string;
     stageProgress: number;
     overallProgress: number;
+    audioProgress: number;
+    videoProgress: number;
+    transcriptProgress: number;
     message: string;
     updatedAt: string;
   } | null;
@@ -84,6 +87,7 @@ export interface Result {
   sessionId: string;
   audioPath: string | null;
   videoPath: string | null;
+  transcriptPath?: string | null;
   manifestPath?: string | null;
   sizeBytes?: string | null;
   duration?: number | null;

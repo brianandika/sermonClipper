@@ -38,6 +38,21 @@ function getRequestedOutputName(job: Job) {
   return trimmed.replace(/\.[^.]+$/, '');
 }
 
+function MiniBar({ label, value, color }: { label: string; value: number; color: string }) {
+  const pct = Math.max(0, Math.min(100, value));
+  return (
+    <div style={{ marginBottom: '0.4rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: '#64748b', marginBottom: '0.15rem' }}>
+        <span>{label}</span>
+        <span>{pct}%</span>
+      </div>
+      <div style={{ height: '0.5rem', background: '#e2e8f0', borderRadius: '999px', overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, transition: 'width 0.4s ease' }} />
+      </div>
+    </div>
+  );
+}
+
 export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onReset }: JobsFlowProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
@@ -153,7 +168,9 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
               const isOwnedByCurrentSession = currentSessionId !== null && job.sessionId === currentSessionId;
               const canCancel = isOwnedByCurrentSession && ACTIVE_STATUSES.has(job.status);
               const canOpenResult = isOwnedByCurrentSession && Boolean(job.result?.audioPath);
-              const progressPercent = Math.max(0, Math.min(100, job.progress?.overallProgress ?? 0));
+              const audioProgress = Math.max(0, Math.min(100, job.progress?.audioProgress ?? 0));
+              const videoProgress = Math.max(0, Math.min(100, job.progress?.videoProgress ?? 0));
+              const transcriptProgress = Math.max(0, Math.min(100, job.progress?.transcriptProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
               const requestedOutputName = getRequestedOutputName(job);
 
@@ -172,10 +189,9 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                     {isActiveRow ? <div style={{ fontSize: '0.875rem', color: '#2563eb', marginTop: '0.25rem' }}>Newest submission</div> : null}
                   </td>
                   <td style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0', verticalAlign: 'top', minWidth: '180px' }}>
-                    <div style={{ height: '0.75rem', background: '#e2e8f0', borderRadius: '999px', overflow: 'hidden' }}>
-                      <div style={{ width: `${progressPercent}%`, height: '100%', background: '#2563eb' }} />
-                    </div>
-                    <div style={{ fontSize: '0.875rem', color: '#64748b', marginTop: '0.35rem' }}>{progressPercent}%</div>
+                    <MiniBar label="Audio" value={audioProgress} color="#2563eb" />
+                    <MiniBar label="Video" value={videoProgress} color="#7c3aed" />
+                    <MiniBar label="Transcript" value={transcriptProgress} color="#059669" />
                   </td>
                   <td style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0', verticalAlign: 'top', overflowWrap: 'anywhere' }}>
                     {job.progress?.message ?? job.failureReason ?? (TERMINAL_STATUSES.has(job.status) ? 'No active progress' : 'Queued')}

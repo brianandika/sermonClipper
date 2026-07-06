@@ -260,6 +260,7 @@ export class JobsService {
                     sessionId: job.result.sessionId,
                     videoPath: normalizeResultPath(job.result.videoPath),
                     audioPath: normalizeResultPath(job.result.audioPath),
+                    transcriptPath: normalizeResultPath(job.result.transcriptPath),
                     manifestPath: normalizeResultPath(job.result.manifestPath),
                     sizeBytes: job.result.sizeBytes?.toString() ?? null,
                     duration: job.result.duration,
@@ -272,6 +273,9 @@ export class JobsService {
                     stage: job.progress.stage,
                     stageProgress: job.progress.stageProgress,
                     overallProgress: job.progress.overallProgress,
+                    audioProgress: job.progress.audioProgress,
+                    videoProgress: job.progress.videoProgress,
+                    transcriptProgress: job.progress.transcriptProgress,
                     message: job.progress.message,
                     updatedAt: job.progress.updatedAt.toISOString(),
                 }

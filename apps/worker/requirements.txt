@@ -1,0 +1,14 @@
+# Python dependencies for local sermon transcription (invoked by the worker).
+faster-whisper==1.1.1
+
+# faster-whisper 1.1.1 imports `requests` in its utils but does not declare it
+# as a dependency, and current huggingface_hub uses httpx instead of requests.
+# Pin it explicitly so a clean install (e.g. the Docker image) has it.
+requests==2.32.3
+
+# Optional: enable NVIDIA GPU acceleration for faster-whisper inside the
+# container. These provide the CUDA/cuDNN runtime libraries CTranslate2 needs.
+# They are safe to install on CPU-only hosts (unused there); the worker falls
+# back to CPU automatically if the GPU stack is unavailable.
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cudnn-cu12==9.1.0.70

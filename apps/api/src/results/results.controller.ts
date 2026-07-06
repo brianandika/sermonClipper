@@ -51,4 +51,19 @@ export class ResultsController {
         response.type("video/mp4");
         response.sendFile(result.videoPath);
     }
+
+    @Get(":resultId/transcript")
+    async getTranscriptArtifact(
+        @Req() request: Request,
+        @Res() response: Response,
+        @Param("resultId") resultId: string,
+    ): Promise<void> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const result = await this.resultsService.getOwnedResultById(session.id, resultId);
+        if (!result.transcriptPath) {
+            throw new NotFoundException("Transcript is not ready yet");
+        }
+        response.type("text/vtt");
+        response.sendFile(result.transcriptPath);
+    }
 }

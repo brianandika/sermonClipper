@@ -27,6 +27,7 @@ export enum JobStage {
     waitingForEncode = "WAITING_FOR_ENCODE",
     encodeVideo = "ENCODE_VIDEO",
     encodeAudio = "ENCODE_AUDIO",
+    transcribe = "TRANSCRIBE",
     finalize = "FINALIZE",
     complete = "COMPLETE",
 }
@@ -105,6 +106,9 @@ export interface JobResponse {
         stage: string;
         stageProgress: number;
         overallProgress: number;
+        audioProgress: number;
+        videoProgress: number;
+        transcriptProgress: number;
         message: string;
         updatedAt: string;
     } | null;
@@ -120,6 +124,7 @@ export interface ResultResponse {
     sessionId: string;
     videoPath: string | null;
     audioPath: string | null;
+    transcriptPath: string | null;
     manifestPath: string | null;
     sizeBytes: string | null;
     duration: number | null;

@@ -83,13 +83,16 @@ model Job {
 }
 
 model JobProgress {
-  jobId           String   @id
-  stage           String
-  stageProgress   Int
-  overallProgress Int
-  message         String
-  updatedAt       DateTime @updatedAt
-  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId              String   @id
+  stage              String
+  stageProgress      Int
+  overallProgress    Int
+  audioProgress      Int      @default(0)
+  videoProgress      Int      @default(0)
+  transcriptProgress Int      @default(0)
+  message            String
+  updatedAt          DateTime @updatedAt
+  job                Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
 }
 
 model Result {
@@ -98,6 +101,7 @@ model Result {
   sessionId    String
   videoPath    String?
   audioPath    String?
+  transcriptPath String?
   manifestPath String?
   sizeBytes    BigInt?
   duration     Float?

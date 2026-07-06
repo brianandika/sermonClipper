@@ -23,6 +23,11 @@ RUN npm ci
 
 COPY . .
 
+# Python deps for local transcription (faster-whisper). Debian 12 marks the
+# system environment as externally managed, so --break-system-packages is
+# required to install into the image's system Python.
+RUN pip3 install --break-system-packages --no-cache-dir -r apps/worker/requirements.txt
+
 RUN npm run prisma:generate \
     && npm run build:shared \
     && npm run build:api \
