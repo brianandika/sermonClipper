@@ -1422,11 +1422,7 @@ async function processClipJob(payload: ClipProcessJobData) {
         await assertJobNotCanceled(job.id);
 
         const outputStats = await stat(outputVideoPath);
-        // Use the deterministic assembled duration (kept segments minus crossfades)
-        // rather than probing the output: some real source files make ffmpeg report
-        // a container duration near the full source length even though the rendered
-        // clip is short. This value is exactly how the output was constructed.
-        const outputDuration = expectedVideoDuration;
+        const outputDuration = await detectOutputDuration(job.id, outputVideoPath);
 
         await writeFile(processingManifestPath, JSON.stringify({
             jobId: job.id,

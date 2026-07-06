@@ -7,25 +7,6 @@ interface ResultsFlowProps {
   result: Result;
 }
 
-function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return '0:00';
-  }
-
-  // Floor (not round) so this matches how the audio/video players display the
-  // time — a 28.5s clip shows 0:28 in the players, and Math.round would show 0:29.
-  const totalSeconds = Math.floor(seconds);
-  const hrs = Math.floor(totalSeconds / 3600);
-  const mins = Math.floor((totalSeconds % 3600) / 60);
-  const secs = totalSeconds % 60;
-
-  if (hrs > 0) {
-    return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  }
-
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
-
 function formatStatus(value: string): string {
   return value
     .split('_')
@@ -54,25 +35,9 @@ function getRequestedBaseName(job: Job): string | undefined {
   return trimmed.replace(/\.[^.]+$/, '');
 }
 
-// Duration of the kept output: the start..end span minus any removed middle
-// clips. Used as a fallback before the worker's measured duration is available.
-function getKeptDuration(job: Job): number {
-  const { startTime, endTime, clipStarts, clipEnds } = job.payload;
-  let total = endTime - startTime;
-  if (clipStarts && clipEnds && clipStarts.length === clipEnds.length) {
-    for (let i = 0; i < clipStarts.length; i += 1) {
-      total -= Math.max(0, clipEnds[i] - clipStarts[i]);
-    }
-  }
-  return Math.max(0, total);
-}
-
 export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const [currentJob, setCurrentJob] = useState(job);
   const [currentResult, setCurrentResult] = useState(result);
-  // Actual playable duration read from the video element, so "Final duration"
-  // is the exact number the player shows (not a separately-computed estimate).
-  const [mediaDuration, setMediaDuration] = useState<number | null>(null);
 
   useEffect(() => {
     setCurrentJob(job);
@@ -126,9 +91,6 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
   // Prefer the worker's actual measured output duration (accounts for removed
   // middle clips and crossfades); fall back to the kept-span estimate.
-  // Prefer the video element's real duration (matches the player exactly);
-  // fall back to the server value, then the kept-span estimate, before it loads.
-  const duration = mediaDuration ?? currentResult.duration ?? getKeptDuration(currentJob);
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
@@ -153,10 +115,6 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
         <article className="results-summary-card">
           <p className="results-summary-label">Status</p>
           <p className="results-summary-value">{formatStatus(currentJob.status)}</p>
-        </article>
-        <article className="results-summary-card">
-          <p className="results-summary-label">Final duration</p>
-          <p className="results-summary-value">{formatDuration(duration)}</p>
         </article>
       </section>
 
@@ -188,16 +146,7 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
           </div>
           {isVideoReady ? (
             <>
-              <video
-                controls
-                className="results-video-player"
-                onLoadedMetadata={(e) => {
-                  const d = e.currentTarget.duration;
-                  if (Number.isFinite(d) && d > 0) {
-                    setMediaDuration(d);
-                  }
-                }}
-              >
+              <video controls className="results-video-player">
                 <source src={videoUrl} type="video/mp4" />
                 Your browser doesn't support video playback.
               </video>
