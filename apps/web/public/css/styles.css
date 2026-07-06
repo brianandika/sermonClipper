@@ -634,7 +634,8 @@ video, audio {
     justify-content: flex-start;
   }
 
-  .shorts-layout {
+  .shorts-layout,
+  .shorts-editor-body {
     grid-template-columns: 1fr;
   }
 
@@ -879,6 +880,61 @@ video, audio {
   margin: 0.2rem 0 0;
   color: #dc2626;
   font-size: 0.85rem;
+}
+
+/* Stacked per-short editors (each with its own player + transcript) */
+.shorts-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.shorts-editor-count {
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.shorts-editor-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  width: 100%;
+}
+
+.shorts-editor-card {
+  box-sizing: border-box;
+  width: 100%;
+  gap: 0;
+}
+
+.shorts-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+
+.shorts-editor-index {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.shorts-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.shorts-editor-body .shorts-preview-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
 }
 
 .shorts-prep {

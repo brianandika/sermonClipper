@@ -50,6 +50,8 @@ interface Moment {
 // A full-height 9:16 window spans (9/16) / (16/9) = 81/256 of a 16:9 frame's
 // width. Must match computeShortCrop / buildShortVideoFilter in the worker.
 const WINDOW_FRACTION = 81 / 256;
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 2.5;
 const TERMINAL_STATUSES = ['completed', 'failed', 'canceled', 'expired'];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -109,9 +111,6 @@ function slugify(value: string): string {
   return base || 'short';
 }
 
-const MIN_ZOOM = 0.3;
-const MAX_ZOOM = 2.5;
-
 function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
   const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
   // Zoom in (>1) tightens the window in both dimensions; zoom out (<1) grows it
@@ -124,6 +123,193 @@ function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
   return { left: `${leftPct}%`, width: `${widthPct}%`, top: `${topPct}%`, height: `${heightPct}%` };
 }
 
+function momentError(moment: Moment, duration: number): string | null {
+  if (!Number.isFinite(moment.start) || !Number.isFinite(moment.end)) return 'Start and end must be numbers';
+  if (moment.start < 0) return 'Start must be ≥ 0';
+  if (moment.end <= moment.start) return 'End must be after start';
+  if (duration > 0 && moment.end > duration + 0.001) return 'End is beyond the video length';
+  return null;
+}
+
+interface ShortEditorProps {
+  index: number;
+  source: Asset;
+  cues: Cue[];
+  moment: Moment;
+  fallbackDuration: number;
+  onChange: (patch: Partial<Moment>) => void;
+  onRemove: () => void;
+  onExport: () => void;
+}
+
+// One self-contained short: its own player + 9:16 crop preview + transcript that
+// follows this player + framing controls + export/result. Stacked vertically so
+// each short is edited in isolation.
+function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, onRemove, onExport }: ShortEditorProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(fallbackDuration);
+
+  const videoUrl = useMemo(() => getAssetSourceUrl(source.assetId), [source.assetId]);
+  const activeCueIndex = useMemo(
+    () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
+    [cues, currentTime],
+  );
+
+  useEffect(() => {
+    if (activeCueIndex < 0) return;
+    cueRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeCueIndex]);
+
+  const clampTime = (value: number) => {
+    if (!Number.isFinite(value) || value < 0) return 0;
+    if (duration > 0) return Math.min(value, duration);
+    return value;
+  };
+  const stepBy = (delta: number) => {
+    if (videoRef.current) videoRef.current.currentTime = clampTime(videoRef.current.currentTime + delta);
+  };
+  const jumpTo = (seconds: number) => {
+    if (videoRef.current) videoRef.current.currentTime = clampTime(seconds);
+  };
+  const setBoundToCurrent = (bound: 'start' | 'end') => {
+    if (!videoRef.current) return;
+    onChange({ [bound]: Number(clampTime(videoRef.current.currentTime).toFixed(3)) } as Partial<Moment>);
+  };
+
+  const error = moment.status !== 'completed' ? momentError(moment, duration) : null;
+
+  return (
+    <article className="results-card shorts-editor-card">
+      <div className="shorts-editor-head">
+        <span className="shorts-editor-index">Short {index + 1}</span>
+        <input
+          className="shorts-moment-title"
+          type="text"
+          value={moment.title}
+          onChange={(event) => onChange({ title: event.target.value })}
+          aria-label="Short title"
+        />
+        <button type="button" className="btn remove-clip" onClick={onRemove}>Remove</button>
+      </div>
+
+      <div className="shorts-editor-body">
+        <section className="shorts-preview-col">
+          <div className="shorts-preview">
+            <video
+              ref={videoRef}
+              className="shorts-video"
+              controls
+              onLoadedMetadata={(event) => {
+                const value = event.currentTarget.duration;
+                if (Number.isFinite(value) && value > 0) setDuration(value);
+              }}
+              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            >
+              <source src={videoUrl} type={source.mimeType || 'video/mp4'} />
+              Your browser does not support video playback.
+            </video>
+            <div className="shorts-crop-window" style={cropWindowStyle(moment.cropX, moment.zoom)} aria-hidden="true">
+              <span className="shorts-crop-label">9:16</span>
+            </div>
+          </div>
+
+          <p className="shorts-playhead">
+            Playhead: <strong>{formatTimecode(currentTime)}</strong>
+            {duration > 0 ? ` / ${formatTimecode(duration)}` : ''}
+          </p>
+          <div className="shorts-stepper" role="group" aria-label="Fine seek">
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(-1)} title="Back 1 second">⏪ 1s</button>
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(-0.1)} title="Back 0.1 second">◀ 0.1s</button>
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(0.1)} title="Forward 0.1 second">0.1s ▶</button>
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(1)} title="Forward 1 second">1s ⏩</button>
+          </div>
+
+          <div className="shorts-range">
+            <label>
+              Start
+              <input type="text" value={moment.start.toFixed(3)} onChange={(event) => onChange({ start: Number.parseFloat(event.target.value) })} />
+            </label>
+            <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent('start')}>Set</button>
+            <button type="button" className="btn" onClick={() => jumpTo(moment.start)}>Jump</button>
+          </div>
+
+          <div className="shorts-range">
+            <label>
+              End
+              <input type="text" value={moment.end.toFixed(3)} onChange={(event) => onChange({ end: Number.parseFloat(event.target.value) })} />
+            </label>
+            <button type="button" className="btn set-end-time" onClick={() => setBoundToCurrent('end')}>Set</button>
+            <button type="button" className="btn" onClick={() => jumpTo(moment.end)}>Jump</button>
+          </div>
+
+          <label className="shorts-slider">
+            <span>Horizontal position</span>
+            <input type="range" min={0} max={1} step={0.01} value={moment.cropX} onChange={(event) => onChange({ cropX: Number.parseFloat(event.target.value) })} />
+          </label>
+
+          <label className="shorts-slider">
+            <span>Zoom ({moment.zoom.toFixed(2)}× {moment.zoom < 1 ? '— zoomed out, black bars' : ''})</span>
+            <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.05} value={moment.zoom} onChange={(event) => onChange({ zoom: Number.parseFloat(event.target.value) })} />
+          </label>
+
+          <label className="shorts-toggle">
+            <input type="checkbox" checked={moment.captions} onChange={(event) => onChange({ captions: event.target.checked })} />
+            Burn in captions
+          </label>
+
+          {error && <p className="shorts-error">{error}</p>}
+          {moment.status === 'processing' && <p className="results-pending-copy">{moment.message || 'Processing…'}</p>}
+          {moment.status === 'failed' && moment.message && !error && <p className="shorts-error">{moment.message}</p>}
+
+          {moment.status === 'completed' && moment.result?.videoPath && (
+            <>
+              <video controls className="results-video-player shorts-result-player">
+                <source src={getResultArtifact(moment.result.resultId, 'video')} type="video/mp4" />
+              </video>
+              <a href={getResultArtifact(moment.result.resultId, 'video')} download={`${slugify(moment.title)}.mp4`} className="btn results-download-btn">
+                Download Short
+              </a>
+              {moment.message && <p className="results-pending-copy">{moment.message}</p>}
+            </>
+          )}
+
+          {moment.status === 'idle' || moment.status === 'failed' ? (
+            <button type="button" className="btn results-download-btn" disabled={Boolean(error)} onClick={onExport}>
+              {moment.status === 'failed' ? 'Retry export' : 'Export this short'}
+            </button>
+          ) : null}
+        </section>
+
+        <section className="shorts-transcript-col">
+          <h3 className="shorts-section-title">Transcript</h3>
+          {cues.length === 0 ? (
+            <p className="shorts-hint">No transcript cues were found for this source.</p>
+          ) : (
+            <div className="shorts-transcript" role="list">
+              {cues.map((cue, cueIndex) => (
+                <button
+                  key={`cue-${cueIndex}`}
+                  type="button"
+                  role="listitem"
+                  ref={(el) => { cueRefs.current[cueIndex] = el; }}
+                  className={`shorts-cue${cueIndex === activeCueIndex ? ' active' : ''}`}
+                  onClick={() => jumpTo(cue.start)}
+                  title="Jump this player to this point"
+                >
+                  <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
+                  <span className="shorts-cue-text">{cue.text || '…'}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </article>
+  );
+}
+
 export default function ShortsFlow({
   uploadedAsset,
   source,
@@ -131,8 +317,6 @@ export default function ShortsFlow({
   prepJobId,
   onPrepJobId,
 }: ShortsFlowProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
   // Picker state
   const [sermons, setSermons] = useState<Job[]>([]);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -145,10 +329,7 @@ export default function ShortsFlow({
   // Editor state
   const [cues, setCues] = useState<Cue[]>([]);
   const [cuesError, setCuesError] = useState<string | null>(null);
-  const [duration, setDuration] = useState<number>(source?.duration ?? 0);
-  const [currentTime, setCurrentTime] = useState(0);
   const [moments, setMoments] = useState<Moment[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
 
   const phase: 'picker' | 'needsTranscript' | 'editor' = !source
     ? 'picker'
@@ -156,7 +337,7 @@ export default function ShortsFlow({
       ? 'editor'
       : 'needsTranscript';
 
-  const videoSourceUrl = useMemo(() => (source ? getAssetSourceUrl(source.assetId) : ''), [source]);
+  const sourceDuration = source?.duration ?? 0;
 
   // Load recent processed sermons for the picker.
   useEffect(() => {
@@ -234,43 +415,11 @@ export default function ShortsFlow({
     };
   }, [phase, source]);
 
-  // Reset the editor when the underlying source changes (not on transcript refresh).
+  // Reset moments when the underlying source changes (not on transcript refresh).
   useEffect(() => {
     setMoments([]);
-    setActiveId(null);
-    setCurrentTime(0);
     setCues([]);
-    setDuration(source?.duration ?? 0);
   }, [source?.assetId]);
-
-  const activeMoment = moments.find((moment) => moment.id === activeId) ?? null;
-  const previewCropX = activeMoment?.cropX ?? 0.5;
-  const previewZoom = activeMoment?.zoom ?? 1;
-
-  const clampTime = (value: number) => {
-    if (!Number.isFinite(value) || value < 0) return 0;
-    if (duration > 0) return Math.min(value, duration);
-    return value;
-  };
-
-  // The cue currently under the playhead — highlighted and scrolled into view so
-  // the transcript follows along as the video plays.
-  const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const activeCueIndex = useMemo(
-    () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
-    [cues, currentTime],
-  );
-
-  useEffect(() => {
-    if (phase !== 'editor' || activeCueIndex < 0) return;
-    cueRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }, [activeCueIndex, phase]);
-
-  // Nudge the playhead by a small delta for fine start/end trimming.
-  const stepBy = (delta: number) => {
-    if (!videoRef.current) return;
-    videoRef.current.currentTime = clampTime(videoRef.current.currentTime + delta);
-  };
 
   // ---- Source picker handlers ------------------------------------------------
   const useSermon = async (sermonJob: Job) => {
@@ -327,53 +476,31 @@ export default function ShortsFlow({
     setMoments((prev) => prev.map((moment) => (moment.id === id ? { ...moment, ...patch } : moment)));
   };
 
-  const addMoment = (start: number, end: number, title: string) => {
+  const clampToSource = (value: number) => {
+    if (!Number.isFinite(value) || value < 0) return 0;
+    return sourceDuration > 0 ? Math.min(value, sourceDuration) : value;
+  };
+
+  const addBlankMoment = () => {
     const id = nextMomentId();
-    const safeStart = clampTime(start);
-    const safeEnd = clampTime(end > safeStart ? end : safeStart + 15);
+    const end = clampToSource(20);
     setMoments((prev) => [
       ...prev,
       {
         id,
-        title: title || `Short ${prev.length + 1}`,
-        start: Number(safeStart.toFixed(3)),
-        end: Number(safeEnd.toFixed(3)),
+        title: `Short ${prev.length + 1}`,
+        start: 0,
+        end: Number((end > 0 ? end : 20).toFixed(3)),
         cropX: 0.5,
         zoom: 1,
         captions: true,
         status: 'idle',
       },
     ]);
-    setActiveId(id);
-  };
-
-  const addBlankMoment = () => {
-    const start = videoRef.current ? videoRef.current.currentTime : currentTime;
-    addMoment(start, start + 20, '');
   };
 
   const removeMoment = (id: string) => {
     setMoments((prev) => prev.filter((moment) => moment.id !== id));
-    setActiveId((prev) => (prev === id ? null : prev));
-  };
-
-  const setBoundToCurrent = (id: string, bound: 'start' | 'end') => {
-    if (!videoRef.current) return;
-    const value = Number(clampTime(videoRef.current.currentTime).toFixed(3));
-    updateMoment(id, { [bound]: value } as Partial<Moment>);
-  };
-
-  const jumpTo = (seconds: number) => {
-    if (!videoRef.current) return;
-    videoRef.current.currentTime = clampTime(seconds);
-  };
-
-  const momentError = (moment: Moment): string | null => {
-    if (!Number.isFinite(moment.start) || !Number.isFinite(moment.end)) return 'Start and end must be numbers';
-    if (moment.start < 0) return 'Start must be ≥ 0';
-    if (moment.end <= moment.start) return 'End must be after start';
-    if (duration > 0 && moment.end > duration + 0.001) return 'End is beyond the video length';
-    return null;
   };
 
   const exportMoment = async (id: string) => {
@@ -381,7 +508,7 @@ export default function ShortsFlow({
     const moment = moments.find((item) => item.id === id);
     if (!moment) return;
 
-    const validation = momentError(moment);
+    const validation = momentError(moment, sourceDuration);
     if (validation) {
       updateMoment(id, { status: 'failed', message: validation });
       return;
@@ -566,225 +693,37 @@ export default function ShortsFlow({
 
       {cuesError && <p className="shorts-error">Couldn’t load the transcript: {cuesError}</p>}
 
-      <div className="shorts-layout">
-        <section className="shorts-preview-col">
-          <div className="shorts-preview">
-            <video
-              ref={videoRef}
-              className="shorts-video"
-              controls
-              onLoadedMetadata={(event) => {
-                const value = event.currentTarget.duration;
-                if (Number.isFinite(value) && value > 0) setDuration(value);
-              }}
-              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-            >
-              <source src={videoSourceUrl} type={source?.mimeType || 'video/mp4'} />
-              Your browser does not support video playback.
-            </video>
-            <div className="shorts-crop-window" style={cropWindowStyle(previewCropX, previewZoom)} aria-hidden="true">
-              <span className="shorts-crop-label">9:16</span>
-            </div>
-          </div>
-          <p className="shorts-playhead">
-            Playhead: <strong>{formatTimecode(currentTime)}</strong>
-            {duration > 0 ? ` / ${formatTimecode(duration)}` : ''}
-            {activeMoment ? ` · Framing “${activeMoment.title}”` : ' · Select a short to frame it'}
-          </p>
-          <div className="shorts-stepper" role="group" aria-label="Fine seek">
-            <button type="button" className="btn btn-secondary" onClick={() => stepBy(-1)} title="Back 1 second">⏪ 1s</button>
-            <button type="button" className="btn btn-secondary" onClick={() => stepBy(-0.1)} title="Back 0.1 second">◀ 0.1s</button>
-            <button type="button" className="btn btn-secondary" onClick={() => stepBy(0.1)} title="Forward 0.1 second">0.1s ▶</button>
-            <button type="button" className="btn btn-secondary" onClick={() => stepBy(1)} title="Forward 1 second">1s ⏩</button>
-          </div>
-          <button type="button" className="btn add-clip" onClick={addBlankMoment}>
-            Add another short
+      <div className="shorts-editor-toolbar">
+        <button type="button" className="btn add-clip" onClick={addBlankMoment}>Add another short</button>
+        {moments.length > 0 && (
+          <button type="button" className="btn" onClick={exportAll} disabled={exportAllCount === 0}>
+            Export all shorts ({exportAllCount})
           </button>
-        </section>
-
-        <section className="shorts-transcript-col">
-          <h2 className="shorts-section-title">Transcript</h2>
-          {cues.length === 0 ? (
-            <p className="shorts-hint">No transcript cues were found for this source.</p>
-          ) : (
-            <div className="shorts-transcript" role="list">
-              {cues.map((cue, index) => (
-                <button
-                  key={`cue-${index}`}
-                  type="button"
-                  role="listitem"
-                  ref={(el) => { cueRefs.current[index] = el; }}
-                  className={`shorts-cue${index === activeCueIndex ? ' active' : ''}`}
-                  onClick={() => jumpTo(cue.start)}
-                  title="Jump the video to this point"
-                >
-                  <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
-                  <span className="shorts-cue-text">{cue.text || '…'}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
+        )}
+        <span className="shorts-editor-count">{moments.length} short{moments.length === 1 ? '' : 's'}</span>
       </div>
 
-      <section className="shorts-moments">
-        <div className="shorts-moments-head">
-          <h2 className="shorts-section-title">Shorts ({moments.length})</h2>
-          {moments.length > 0 && (
-            <button type="button" className="btn" onClick={exportAll} disabled={exportAllCount === 0}>
-              Export all shorts ({exportAllCount})
-            </button>
-          )}
+      {moments.length === 0 ? (
+        <p className="shorts-hint">
+          Use “Add another short” to create one, then scrub its own player, frame the 9:16 window, and export.
+        </p>
+      ) : (
+        <div className="shorts-editor-stack">
+          {source && moments.map((moment, index) => (
+            <ShortEditor
+              key={moment.id}
+              index={index}
+              source={source}
+              cues={cues}
+              moment={moment}
+              fallbackDuration={sourceDuration}
+              onChange={(patch) => updateMoment(moment.id, patch)}
+              onRemove={() => removeMoment(moment.id)}
+              onExport={() => exportMoment(moment.id)}
+            />
+          ))}
         </div>
-
-        {moments.length === 0 ? (
-          <p className="shorts-hint">
-            Click a transcript line to jump the video there, then use “Add another short” to capture a moment.
-          </p>
-        ) : (
-          <div className="shorts-moment-grid">
-            {moments.map((moment) => {
-              const error = moment.status !== 'completed' ? momentError(moment) : null;
-              const isActive = moment.id === activeId;
-              return (
-                <article
-                  key={moment.id}
-                  className={`results-card shorts-moment${isActive ? ' active' : ''}`}
-                  onClick={() => setActiveId(moment.id)}
-                >
-                  <div className="results-card-head">
-                    <input
-                      className="shorts-moment-title"
-                      type="text"
-                      value={moment.title}
-                      onChange={(event) => updateMoment(moment.id, { title: event.target.value })}
-                      onFocus={() => setActiveId(moment.id)}
-                      aria-label="Short title"
-                    />
-                    <button
-                      type="button"
-                      className="btn remove-clip"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeMoment(moment.id);
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-
-                  <div className="shorts-range">
-                    <label>
-                      Start
-                      <input
-                        type="text"
-                        value={moment.start.toFixed(3)}
-                        onChange={(event) => updateMoment(moment.id, { start: Number.parseFloat(event.target.value) })}
-                      />
-                    </label>
-                    <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent(moment.id, 'start')}>
-                      Set
-                    </button>
-                    <button type="button" className="btn" onClick={() => jumpTo(moment.start)}>
-                      Jump
-                    </button>
-                  </div>
-
-                  <div className="shorts-range">
-                    <label>
-                      End
-                      <input
-                        type="text"
-                        value={moment.end.toFixed(3)}
-                        onChange={(event) => updateMoment(moment.id, { end: Number.parseFloat(event.target.value) })}
-                      />
-                    </label>
-                    <button type="button" className="btn set-end-time" onClick={() => setBoundToCurrent(moment.id, 'end')}>
-                      Set
-                    </button>
-                    <button type="button" className="btn" onClick={() => jumpTo(moment.end)}>
-                      Jump
-                    </button>
-                  </div>
-
-                  <label className="shorts-slider">
-                    <span>Horizontal position</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={moment.cropX}
-                      onChange={(event) => updateMoment(moment.id, { cropX: Number.parseFloat(event.target.value) })}
-                    />
-                  </label>
-
-                  <label className="shorts-slider">
-                    <span>Zoom ({moment.zoom.toFixed(2)}× {moment.zoom < 1 ? '— zoomed out, black bars' : ''})</span>
-                    <input
-                      type="range"
-                      min={MIN_ZOOM}
-                      max={MAX_ZOOM}
-                      step={0.05}
-                      value={moment.zoom}
-                      onChange={(event) => updateMoment(moment.id, { zoom: Number.parseFloat(event.target.value) })}
-                    />
-                  </label>
-
-                  <label className="shorts-toggle">
-                    <input
-                      type="checkbox"
-                      checked={moment.captions}
-                      onChange={(event) => updateMoment(moment.id, { captions: event.target.checked })}
-                    />
-                    Burn in captions
-                  </label>
-
-                  {error && <p className="shorts-error">{error}</p>}
-
-                  {moment.status === 'processing' && (
-                    <p className="results-pending-copy">{moment.message || 'Processing…'}</p>
-                  )}
-
-                  {moment.status === 'failed' && moment.message && !error && (
-                    <p className="shorts-error">{moment.message}</p>
-                  )}
-
-                  {moment.status === 'completed' && moment.result?.videoPath && (
-                    <>
-                      <video controls className="results-video-player shorts-result-player">
-                        <source src={getResultArtifact(moment.result.resultId, 'video')} type="video/mp4" />
-                      </video>
-                      <a
-                        href={getResultArtifact(moment.result.resultId, 'video')}
-                        download={`${slugify(moment.title)}.mp4`}
-                        className="btn results-download-btn"
-                      >
-                        Download Short
-                      </a>
-                      {moment.message && <p className="results-pending-copy">{moment.message}</p>}
-                    </>
-                  )}
-
-                  {moment.status === 'idle' || moment.status === 'failed' ? (
-                    <button
-                      type="button"
-                      className="btn results-download-btn"
-                      disabled={Boolean(error)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void exportMoment(moment.id);
-                      }}
-                    >
-                      {moment.status === 'failed' ? 'Retry export' : 'Export this short'}
-                    </button>
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      )}
     </div>
   );
 }
