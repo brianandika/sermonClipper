@@ -159,14 +159,17 @@ const ASS_HEADER = [
     "ScriptType: v4.00+",
     "PlayResX: 1080",
     "PlayResY: 1920",
-    "WrapStyle: 2",
+    // WrapStyle 0 = smart auto-wrapping, so long lines wrap instead of running
+    // off the sides of the frame.
+    "WrapStyle: 0",
     "ScaledBorderAndShadow: yes",
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    // Bold white text, thick black outline + drop shadow, bottom-centered and
-    // lifted off the bottom edge — the standard readable "shorts" caption look.
-    "Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,80,80,240,1",
+    // Bold white text, thick black outline + drop shadow, bottom-centered.
+    // Wide L/R margins keep text off the edges; MarginV=768 places the baseline
+    // ~2/5 up from the bottom of the 1920-tall frame.
+    "Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,90,90,768,1",
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -195,7 +198,7 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
             continue;
         }
 
-        const text = escapeAssText(cue.text);
+        const text = escapeAssText(cue.text).toUpperCase();
         if (!text) {
             continue;
         }

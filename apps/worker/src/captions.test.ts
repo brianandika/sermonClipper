@@ -133,9 +133,10 @@ test("buildAssFromVtt slices to window and rebases to zero", () => {
     // cue3 (10-12) dropped.
     const { content, cueCount } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
     assert.equal(cueCount, 2);
-    assert.match(content, /Dialogue: 0,0:00:00\.00,0:00:01\.00,Default,,0,0,0,,Hello world/);
-    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,Second cue spans\\Ntwo lines/);
-    assert.doesNotMatch(content, /Way outside/);
+    // Captions are burned in uppercase.
+    assert.match(content, /Dialogue: 0,0:00:00\.00,0:00:01\.00,Default,,0,0,0,,HELLO WORLD/);
+    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE SPANS\\NTWO LINES/);
+    assert.doesNotMatch(content, /Way outside/i);
 });
 
 test("buildAssFromVtt drops cues that touch only at the boundary", () => {

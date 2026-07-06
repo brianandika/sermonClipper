@@ -105,9 +105,14 @@ function slugify(value: string): string {
 }
 
 function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
-  const widthPct = (WINDOW_FRACTION / Math.max(1, zoom)) * 100;
+  const z = Math.max(1, zoom);
+  // Zoom tightens the crop in BOTH dimensions: height shrinks to 1/z (centered
+  // vertically) and width to (81/256)/z, mirroring computeShortCrop in the worker.
+  const widthPct = (WINDOW_FRACTION / z) * 100;
+  const heightPct = (1 / z) * 100;
   const leftPct = cropX * (100 - widthPct);
-  return { left: `${leftPct}%`, width: `${widthPct}%` };
+  const topPct = (100 - heightPct) / 2;
+  return { left: `${leftPct}%`, width: `${widthPct}%`, top: `${topPct}%`, height: `${heightPct}%` };
 }
 
 export default function ShortsFlow({ asset }: ShortsFlowProps) {
@@ -219,11 +224,6 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
     addMoment(start, start + 20, '');
   };
 
-  const addMomentFromCue = (cue: Cue) => {
-    const title = cue.text.split(/\s+/).slice(0, 6).join(' ');
-    addMoment(cue.start, cue.end, title);
-  };
-
   const removeMoment = (id: string) => {
     setMoments((prev) => prev.filter((moment) => moment.id !== id));
     setActiveId((prev) => (prev === id ? null : prev));
@@ -296,15 +296,17 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
     }
   };
 
+  // "Export all" (re)exports every short that isn't already mid-export, so the
+  // count keeps including shorts you've already processed (and re-runs them).
   const exportAll = () => {
     moments
-      .filter((moment) => moment.status === 'idle' || moment.status === 'failed')
+      .filter((moment) => moment.status !== 'processing')
       .forEach((moment) => {
         void exportMoment(moment.id);
       });
   };
 
-  const exportableCount = moments.filter((m) => m.status === 'idle' || m.status === 'failed').length;
+  const exportAllCount = moments.filter((m) => m.status !== 'processing').length;
 
   if (phase === 'preparing') {
     return (
@@ -374,7 +376,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
             {activeMoment ? ` · Framing “${activeMoment.title}”` : ' · Select a moment to frame it'}
           </p>
           <button type="button" className="btn add-clip" onClick={addBlankMoment}>
-            Add moment at playhead
+            Add another short
           </button>
         </section>
 
@@ -390,8 +392,8 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
                   type="button"
                   role="listitem"
                   className="shorts-cue"
-                  onClick={() => addMomentFromCue(cue)}
-                  title="Add this moment"
+                  onClick={() => jumpTo(cue.start)}
+                  title="Jump the video to this point"
                 >
                   <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
                   <span className="shorts-cue-text">{cue.text || '…'}</span>
@@ -406,15 +408,15 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
         <div className="shorts-moments-head">
           <h2 className="shorts-section-title">Moments ({moments.length})</h2>
           {moments.length > 0 && (
-            <button type="button" className="btn" onClick={exportAll} disabled={exportableCount === 0}>
-              Export {exportableCount > 0 ? `${exportableCount} ` : ''}short{exportableCount === 1 ? '' : 's'}
+            <button type="button" className="btn" onClick={exportAll} disabled={exportAllCount === 0}>
+              Export all shorts ({exportAllCount})
             </button>
           )}
         </div>
 
         {moments.length === 0 ? (
           <p className="shorts-hint">
-            Click a transcript line, or use “Add moment at playhead”, to create your first short.
+            Click a transcript line to jump the video there, then use “Add another short” to capture a moment.
           </p>
         ) : (
           <div className="shorts-moment-grid">
