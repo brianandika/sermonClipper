@@ -126,6 +126,68 @@ export function escapeAssText(raw: string): string {
         .replace(/\}/g, ")");
 }
 
+// A caption should never occupy more than 2 lines on screen at once, and each
+// line should comfortably fit the 1080-wide frame at the caption font size.
+export const CAPTION_MAX_CHARS_PER_LINE = 22;
+export const CAPTION_MAX_LINES = 2;
+
+// Flatten a cue's text to a single upper-case line: strip inline tags, collapse
+// whitespace, neutralize "{...}" override delimiters. Word-wrapping is applied
+// separately so we control the exact line count.
+export function normalizeCaptionText(raw: string): string {
+    return raw
+        .replace(/<[^>]*>/g, "")
+        .replace(/\{/g, "(")
+        .replace(/\}/g, ")")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+}
+
+// Greedily word-wrap a flat string into lines no longer than maxCharsPerLine.
+export function wrapCaptionLines(text: string, maxCharsPerLine: number): string[] {
+    const words = text.split(/\s+/).filter((word) => word.length > 0);
+    const lines: string[] = [];
+    let current = "";
+
+    for (const word of words) {
+        if (!current) {
+            current = word;
+        }
+        else if (current.length + 1 + word.length <= maxCharsPerLine) {
+            current += ` ${word}`;
+        }
+        else {
+            lines.push(current);
+            current = word;
+        }
+    }
+
+    if (current) {
+        lines.push(current);
+    }
+
+    return lines;
+}
+
+// Split a flat caption string into a sequence of on-screen captions, each at
+// most maxLines lines (joined with the ASS hard-newline "\N"). A long sermon
+// sentence becomes several short captions shown one after another.
+export function chunkCaptions(
+    text: string,
+    maxCharsPerLine = CAPTION_MAX_CHARS_PER_LINE,
+    maxLines = CAPTION_MAX_LINES,
+): string[] {
+    const lines = wrapCaptionLines(text, maxCharsPerLine);
+    const chunks: string[] = [];
+
+    for (let i = 0; i < lines.length; i += maxLines) {
+        chunks.push(lines.slice(i, i + maxLines).join("\\N"));
+    }
+
+    return chunks;
+}
+
 // ASS uses "H:MM:SS.cc" (centiseconds). Carry rounding at the cs boundary so we
 // never emit ".100".
 export function formatAssTime(totalSeconds: number): string {
@@ -167,9 +229,9 @@ const ASS_HEADER = [
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     // Bold white text, thick black outline + drop shadow, bottom-centered.
-    // Wide L/R margins keep text off the edges; MarginV=768 places the baseline
-    // ~2/5 up from the bottom of the 1920-tall frame.
-    "Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,90,90,768,1",
+    // Wide L/R margins keep text off the edges; MarginV=560 sits the block in
+    // the lower third of the 1920-tall frame.
+    "Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,90,90,560,1",
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -198,12 +260,20 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
             continue;
         }
 
-        const text = escapeAssText(cue.text).toUpperCase();
-        if (!text) {
+        // Split a long cue into a sequence of ≤2-line captions and spread the
+        // cue's on-screen time evenly across them, so no more than two lines
+        // ever show at once.
+        const chunks = chunkCaptions(normalizeCaptionText(cue.text));
+        if (chunks.length === 0) {
             continue;
         }
 
-        events.push(`Dialogue: 0,${formatAssTime(start)},${formatAssTime(end)},Default,,0,0,0,,${text}`);
+        const perChunk = (end - start) / chunks.length;
+        chunks.forEach((chunk, index) => {
+            const chunkStart = start + perChunk * index;
+            const chunkEnd = index === chunks.length - 1 ? end : start + perChunk * (index + 1);
+            events.push(`Dialogue: 0,${formatAssTime(chunkStart)},${formatAssTime(chunkEnd)},Default,,0,0,0,,${chunk}`);
+        });
     }
 
     const content = events.length > 0

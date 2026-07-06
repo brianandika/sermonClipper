@@ -5,13 +5,17 @@ import assert from "node:assert/strict";
 import {
     buildAssFromVtt,
     buildShortVideoFilter,
+    CAPTION_MAX_CHARS_PER_LINE,
+    chunkCaptions,
     computeShortCrop,
     escapeAssPathForFilter,
     escapeAssText,
     evenFloor,
     formatAssTime,
+    normalizeCaptionText,
     parseVttCues,
     parseVttTimestamp,
+    wrapCaptionLines,
 } from "./captions";
 
 let passed = 0;
@@ -133,9 +137,9 @@ test("buildAssFromVtt slices to window and rebases to zero", () => {
     // cue3 (10-12) dropped.
     const { content, cueCount } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
     assert.equal(cueCount, 2);
-    // Captions are burned in uppercase.
+    // Captions are burned in uppercase; short cues stay a single caption.
     assert.match(content, /Dialogue: 0,0:00:00\.00,0:00:01\.00,Default,,0,0,0,,HELLO WORLD/);
-    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE SPANS\\NTWO LINES/);
+    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE SPANS TWO\\NLINES/);
     assert.doesNotMatch(content, /Way outside/i);
 });
 
@@ -151,6 +155,58 @@ test("buildAssFromVtt with no cues in range still yields a valid header", () => 
     assert.equal(cueCount, 0);
     assert.match(content, /\[Events\]/);
     assert.doesNotMatch(content, /Dialogue:/);
+});
+
+// --- caption chunking (never exceed 2 lines) --------------------------------
+test("normalizeCaptionText flattens, strips tags, uppercases", () => {
+    assert.equal(normalizeCaptionText("Hello   world\nagain"), "HELLO WORLD AGAIN");
+    assert.equal(normalizeCaptionText("<c>styled</c> {x}"), "STYLED (X)");
+});
+
+test("wrapCaptionLines never exceeds the per-line budget", () => {
+    const lines = wrapCaptionLines(
+        "WHICH IS THAT GOD FREES US IN CHRIST TO LIVE GODLY LIVES",
+        CAPTION_MAX_CHARS_PER_LINE,
+    );
+    for (const line of lines) {
+        assert.ok(line.length <= CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
+    }
+});
+
+test("chunkCaptions caps every caption at 2 lines", () => {
+    const chunks = chunkCaptions(
+        "WHICH IS THAT GOD FREES US IN CHRIST TO LIVE GODLY LIVES OF SELF CONTROL AND INTENTIONALITY FOR HIM",
+    );
+    assert.ok(chunks.length >= 3, "long sentence splits into several captions");
+    for (const chunk of chunks) {
+        const lineCount = chunk.split("\\N").length;
+        assert.ok(lineCount <= 2, `caption has ${lineCount} lines (<=2)`);
+    }
+});
+
+test("buildAssFromVtt splits a long cue into multiple ≤2-line captions timed in order", () => {
+    const vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n"
+        + "which is that God frees us in Christ to live godly lives of self control and intentionality for him\n";
+    const { content, cueCount } = buildAssFromVtt(vtt, 0, 9);
+    assert.ok(cueCount >= 3, "long cue becomes several captions");
+
+    const dialogues = content.split("\n").filter((line) => line.startsWith("Dialogue:"));
+    let prevEnd = -1;
+    for (const line of dialogues) {
+        const text = line.split(",,")[1] ?? "";
+        assert.ok(text.split("\\N").length <= 2, "no caption exceeds 2 lines");
+        // times ascend and don't overlap
+        const [, startRaw, endRaw] = line.match(/Dialogue: 0,([^,]+),([^,]+),/) ?? [];
+        const toSec = (t: string) => {
+            const [h, m, s] = t.split(":");
+            return Number(h) * 3600 + Number(m) * 60 + Number.parseFloat(s);
+        };
+        const s = toSec(startRaw);
+        const e = toSec(endRaw);
+        assert.ok(s >= prevEnd - 1e-6, "captions do not overlap");
+        assert.ok(e > s, "caption has positive duration");
+        prevEnd = e;
+    }
 });
 
 // --- escapeAssPathForFilter / buildShortVideoFilter ------------------------
