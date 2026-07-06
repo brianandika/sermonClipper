@@ -126,10 +126,12 @@ export function escapeAssText(raw: string): string {
         .replace(/\}/g, ")");
 }
 
-// A caption should never occupy more than 2 lines on screen at once, and each
-// line should comfortably fit the 1080-wide frame at the caption font size.
+// Captions aim for 2 lines but may stretch to 3 to avoid leaving a lone
+// trailing line (a "hanging" word/line on its own). Each line should comfortably
+// fit the 1080-wide frame at the caption font size.
 export const CAPTION_MAX_CHARS_PER_LINE = 22;
-export const CAPTION_MAX_LINES = 2;
+export const CAPTION_PREFERRED_LINES = 2;
+export const CAPTION_MAX_LINES = 3;
 
 // Flatten a cue's text to a single upper-case line: strip inline tags, collapse
 // whitespace, neutralize "{...}" override delimiters. Word-wrapping is applied
@@ -170,19 +172,30 @@ export function wrapCaptionLines(text: string, maxCharsPerLine: number): string[
     return lines;
 }
 
-// Split a flat caption string into a sequence of on-screen captions, each at
-// most maxLines lines (joined with the ASS hard-newline "\N"). A long sermon
-// sentence becomes several short captions shown one after another.
+// Split a flat caption string into a sequence of on-screen captions. Each
+// caption prefers `preferredLines` lines but may take one more (up to
+// `maxLines`) to absorb what would otherwise be a lone trailing line — so a
+// long sermon sentence becomes several 2–3 line captions with no orphan.
 export function chunkCaptions(
     text: string,
     maxCharsPerLine = CAPTION_MAX_CHARS_PER_LINE,
+    preferredLines = CAPTION_PREFERRED_LINES,
     maxLines = CAPTION_MAX_LINES,
 ): string[] {
     const lines = wrapCaptionLines(text, maxCharsPerLine);
     const chunks: string[] = [];
+    let index = 0;
 
-    for (let i = 0; i < lines.length; i += maxLines) {
-        chunks.push(lines.slice(i, i + maxLines).join("\\N"));
+    while (index < lines.length) {
+        const remaining = lines.length - index;
+        let take = Math.min(preferredLines, remaining);
+        // If taking the preferred count would strand exactly one line at the
+        // end, pull it into this caption instead (up to maxLines).
+        if (remaining - take === 1 && take < maxLines) {
+            take += 1;
+        }
+        chunks.push(lines.slice(index, index + take).join("\\N"));
+        index += take;
     }
 
     return chunks;
@@ -260,9 +273,8 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
             continue;
         }
 
-        // Split a long cue into a sequence of ≤2-line captions and spread the
-        // cue's on-screen time evenly across them, so no more than two lines
-        // ever show at once.
+        // Split a long cue into a sequence of 2–3 line captions (never a lone
+        // trailing line) and spread the cue's on-screen time evenly across them.
         const chunks = chunkCaptions(normalizeCaptionText(cue.text));
         if (chunks.length === 0) {
             continue;

@@ -173,28 +173,40 @@ test("wrapCaptionLines never exceeds the per-line budget", () => {
     }
 });
 
-test("chunkCaptions caps every caption at 2 lines", () => {
+test("chunkCaptions keeps captions at 2–3 lines with no lone trailing line", () => {
     const chunks = chunkCaptions(
         "WHICH IS THAT GOD FREES US IN CHRIST TO LIVE GODLY LIVES OF SELF CONTROL AND INTENTIONALITY FOR HIM",
     );
-    assert.ok(chunks.length >= 3, "long sentence splits into several captions");
-    for (const chunk of chunks) {
+    assert.ok(chunks.length >= 2, "long sentence splits into several captions");
+    chunks.forEach((chunk, i) => {
         const lineCount = chunk.split("\\N").length;
-        assert.ok(lineCount <= 2, `caption has ${lineCount} lines (<=2)`);
-    }
+        assert.ok(lineCount <= 3, `caption has ${lineCount} lines (<=3)`);
+        // Only a single-caption result may be one line; otherwise never strand one.
+        if (chunks.length > 1) {
+            assert.ok(lineCount >= 2, `caption ${i} has ${lineCount} lines (>=2, no orphan)`);
+        }
+    });
+});
+
+test("chunkCaptions absorbs a lone third line into a 3-line caption", () => {
+    // Wraps to 3 lines ("AAAA BBBB" / "CCCC DDDD" / "EEEE"); naive 2+1 would
+    // strand the last line, so expect a single 3-line caption instead.
+    const chunks = chunkCaptions("AAAA BBBB CCCC DDDD EEEE", 12);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0].split("\\N").length, 3);
 });
 
 test("buildAssFromVtt splits a long cue into multiple ≤2-line captions timed in order", () => {
     const vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n"
         + "which is that God frees us in Christ to live godly lives of self control and intentionality for him\n";
     const { content, cueCount } = buildAssFromVtt(vtt, 0, 9);
-    assert.ok(cueCount >= 3, "long cue becomes several captions");
+    assert.ok(cueCount >= 2, "long cue becomes several captions");
 
     const dialogues = content.split("\n").filter((line) => line.startsWith("Dialogue:"));
     let prevEnd = -1;
     for (const line of dialogues) {
         const text = line.split(",,")[1] ?? "";
-        assert.ok(text.split("\\N").length <= 2, "no caption exceeds 2 lines");
+        assert.ok(text.split("\\N").length <= 3, "no caption exceeds 3 lines");
         // times ascend and don't overlap
         const [, startRaw, endRaw] = line.match(/Dialogue: 0,([^,]+),([^,]+),/) ?? [];
         const toSec = (t: string) => {
