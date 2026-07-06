@@ -64,10 +64,12 @@ export class CreateJobDto {
     @Max(1)
     cropX?: number;
 
+    // Below 1 = zoom out (letterboxed); above 1 = zoom in (tighter crop).
     @ValidateIf((o: CreateJobDto) => o.kind === "short")
     @Type(() => Number)
     @IsNumber()
-    @Min(1)
+    @Min(0.3)
+    @Max(2.5)
     zoom?: number;
 
     @IsOptional()

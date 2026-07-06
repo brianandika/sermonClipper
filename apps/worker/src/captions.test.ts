@@ -227,16 +227,40 @@ test("escapeAssPathForFilter escapes filtergraph-special characters", () => {
     assert.equal(escapeAssPathForFilter("C:\\x\\y.ass"), "C\\:\\\\x\\\\y.ass");
 });
 
-test("buildShortVideoFilter assembles crop/scale/setsar with optional captions", () => {
+test("buildShortVideoFilter (zoom>=1) crops then scales, with optional captions", () => {
     const crop = computeShortCrop(1920, 1080, 1, 0.5);
     assert.equal(
-        buildShortVideoFilter(crop),
+        buildShortVideoFilter(1920, 1080, 1, 0.5),
         `crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y},scale=1080:1920,setsar=1`,
     );
     assert.equal(
-        buildShortVideoFilter(crop, "/w/captions.ass"),
+        buildShortVideoFilter(1920, 1080, 1, 0.5, "/w/captions.ass"),
         `crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y},scale=1080:1920,setsar=1,ass=/w/captions.ass`,
     );
+});
+
+test("buildShortVideoFilter (zoom<1) scales down and letterboxes with black bars", () => {
+    // z=0.5 on a 1920x1080 source: full width fits (crop sides for pan), black bars top/bottom.
+    const f = buildShortVideoFilter(1920, 1080, 0.5, 0.5);
+    assert.match(f, /^scale=1706:960,crop=1080:960:\d+:0,pad=1080:1920:0:480:black,setsar=1$/);
+    // padY of 480 => even black bars top and bottom.
+    assert.ok(f.includes("pad=1080:1920:0:480:black"), "even top/bottom black bars");
+});
+
+test("buildShortVideoFilter (very low zoom) letterboxes on all sides", () => {
+    const f = buildShortVideoFilter(1920, 1080, 0.3, 0.5);
+    // whole frame visible: side bars (28) and top/bottom bars (672)
+    assert.match(f, /^scale=1024:576,crop=1024:576:0:0,pad=1080:1920:28:672:black,setsar=1$/);
+});
+
+test("buildShortVideoFilter dims and offsets are all even", () => {
+    for (const z of [0.3, 0.45, 0.6, 0.85]) {
+        const f = buildShortVideoFilter(1920, 1080, z, 0.7).replace(/,setsar=1$/, "");
+        const nums = f.match(/\d+/g)!.map(Number).filter((n) => n !== 1080 && n !== 1920);
+        for (const n of nums) {
+            assert.equal(n % 2, 0, `${n} even in "${f}"`);
+        }
+    }
 });
 
 process.stdout.write(`\n${passed} caption tests passed\n`);

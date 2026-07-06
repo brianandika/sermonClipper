@@ -305,14 +305,56 @@ export function escapeAssPathForFilter(path: string): string {
         .replace(/'/g, "\\'");
 }
 
-// Assemble the full "-vf" chain for a short: crop the 9:16 window, scale to
-// 1080x1920, reset SAR, then optionally burn captions.
-export function buildShortVideoFilter(crop: ShortCrop, assFilePath?: string): string {
-    const chain = [
-        `crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y}`,
-        "scale=1080:1920",
-        "setsar=1",
-    ];
+export const MIN_ZOOM = 0.3;
+export const MAX_ZOOM = 2.5;
+
+// Round to the nearest even integer (H.264 needs even dimensions/offsets).
+function toEven(value: number): number {
+    const rounded = Math.round(value);
+    return rounded - (rounded % 2);
+}
+
+// Assemble the full "-vf" chain for a short and optionally burn captions.
+//
+// zoom >= 1: crop a 9:16 window from the source and scale it to fill 1080x1920.
+// zoom  < 1: zoom OUT — scale the whole frame down (keeping its aspect ratio)
+//   and letterbox it into the 1080x1920 canvas with even black bars. As zoom
+//   drops, more of the frame is visible; below ~0.316 the full width fits and
+//   black bars appear top and bottom (and eventually the sides too). cropX pans
+//   horizontally whenever the scaled frame is wider than the canvas.
+export function buildShortVideoFilter(
+    width: number,
+    height: number,
+    zoom: number,
+    cropX: number,
+    assFilePath?: string,
+): string {
+    const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number.isFinite(zoom) ? zoom : 1));
+    const chain: string[] = [];
+
+    if (z >= 1) {
+        const crop = computeShortCrop(width, height, z, cropX);
+        chain.push(`crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y}`, "scale=1080:1920", "setsar=1");
+    }
+    else {
+        // Scale the source so its height maps to z * 1920 of the canvas.
+        const displayH = Math.max(2, toEven(1920 * z));
+        const displayW = Math.max(2, toEven(displayH * (width / height)));
+        const visibleW = Math.min(1080, displayW);
+        const visibleH = Math.min(1920, displayH);
+        const panRange = Math.max(0, displayW - visibleW);
+        const cropXoff = toEven(clamp(Math.round(cropX * panRange), 0, panRange));
+        const cropYoff = toEven(Math.max(0, (displayH - visibleH) / 2));
+        const padX = toEven(Math.max(0, (1080 - visibleW) / 2));
+        const padY = toEven(Math.max(0, (1920 - visibleH) / 2));
+
+        chain.push(
+            `scale=${displayW}:${displayH}`,
+            `crop=${visibleW}:${visibleH}:${cropXoff}:${cropYoff}`,
+            `pad=1080:1920:${padX}:${padY}:black`,
+            "setsar=1",
+        );
+    }
 
     if (assFilePath) {
         chain.push(`ass=${escapeAssPathForFilter(assFilePath)}`);

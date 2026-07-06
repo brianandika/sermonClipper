@@ -109,11 +109,16 @@ function slugify(value: string): string {
   return base || 'short';
 }
 
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 2.5;
+
 function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
-  const z = Math.max(1, zoom);
-  // Zoom tightens the crop in BOTH dimensions, mirroring computeShortCrop.
-  const widthPct = (WINDOW_FRACTION / z) * 100;
-  const heightPct = (1 / z) * 100;
+  const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+  // Zoom in (>1) tightens the window in both dimensions; zoom out (<1) grows it
+  // until it captures the whole frame (clamped to the video box — the export
+  // adds black bars around what exceeds the frame).
+  const widthPct = Math.min(100, (WINDOW_FRACTION / z) * 100);
+  const heightPct = Math.min(100, (1 / z) * 100);
   const leftPct = cropX * (100 - widthPct);
   const topPct = (100 - heightPct) / 2;
   return { left: `${leftPct}%`, width: `${widthPct}%`, top: `${topPct}%`, height: `${heightPct}%` };
@@ -246,6 +251,25 @@ export default function ShortsFlow({
     if (!Number.isFinite(value) || value < 0) return 0;
     if (duration > 0) return Math.min(value, duration);
     return value;
+  };
+
+  // The cue currently under the playhead — highlighted and scrolled into view so
+  // the transcript follows along as the video plays.
+  const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeCueIndex = useMemo(
+    () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
+    [cues, currentTime],
+  );
+
+  useEffect(() => {
+    if (phase !== 'editor' || activeCueIndex < 0) return;
+    cueRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeCueIndex, phase]);
+
+  // Nudge the playhead by a small delta for fine start/end trimming.
+  const stepBy = (delta: number) => {
+    if (!videoRef.current) return;
+    videoRef.current.currentTime = clampTime(videoRef.current.currentTime + delta);
   };
 
   // ---- Source picker handlers ------------------------------------------------
@@ -567,6 +591,12 @@ export default function ShortsFlow({
             {duration > 0 ? ` / ${formatTimecode(duration)}` : ''}
             {activeMoment ? ` · Framing “${activeMoment.title}”` : ' · Select a short to frame it'}
           </p>
+          <div className="shorts-stepper" role="group" aria-label="Fine seek">
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(-1)} title="Back 1 second">⏪ 1s</button>
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(-0.1)} title="Back 0.1 second">◀ 0.1s</button>
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(0.1)} title="Forward 0.1 second">0.1s ▶</button>
+            <button type="button" className="btn btn-secondary" onClick={() => stepBy(1)} title="Forward 1 second">1s ⏩</button>
+          </div>
           <button type="button" className="btn add-clip" onClick={addBlankMoment}>
             Add another short
           </button>
@@ -583,7 +613,8 @@ export default function ShortsFlow({
                   key={`cue-${index}`}
                   type="button"
                   role="listitem"
-                  className="shorts-cue"
+                  ref={(el) => { cueRefs.current[index] = el; }}
+                  className={`shorts-cue${index === activeCueIndex ? ' active' : ''}`}
                   onClick={() => jumpTo(cue.start)}
                   title="Jump the video to this point"
                 >
@@ -689,11 +720,11 @@ export default function ShortsFlow({
                   </label>
 
                   <label className="shorts-slider">
-                    <span>Zoom ({moment.zoom.toFixed(2)}×)</span>
+                    <span>Zoom ({moment.zoom.toFixed(2)}× {moment.zoom < 1 ? '— zoomed out, black bars' : ''})</span>
                     <input
                       type="range"
-                      min={1}
-                      max={2.5}
+                      min={MIN_ZOOM}
+                      max={MAX_ZOOM}
                       step={0.05}
                       value={moment.zoom}
                       onChange={(event) => updateMoment(moment.id, { zoom: Number.parseFloat(event.target.value) })}

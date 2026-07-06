@@ -9,7 +9,7 @@ import { execFile, spawn } from "node:child_process";
 import IORedis from "ioredis";
 import { PrismaClient, JobStatus as PrismaJobStatus, HardwareOption } from "@prisma/client";
 import { JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type JobKind, type QueueName } from "@sermon-clipper/shared";
-import { buildAssFromVtt, buildShortVideoFilter, clamp, computeShortCrop } from "./captions";
+import { buildAssFromVtt, buildShortVideoFilter, clamp, MAX_ZOOM, MIN_ZOOM } from "./captions";
 
 const execFileAsync = promisify(execFile);
 const defaultCpuConcurrency = Math.max(1, Math.min(4, availableParallelism()));
@@ -1722,7 +1722,7 @@ async function processShortJob(payload: ClipProcessJobData) {
         }
 
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
-        const zoom = request.zoom && request.zoom >= 1 ? request.zoom : 1;
+        const zoom = clamp(request.zoom && request.zoom > 0 ? request.zoom : 1, MIN_ZOOM, MAX_ZOOM);
         const cropX = clamp(request.cropX ?? 0.5, 0, 1);
         const wantCaptions = request.captions !== false;
         const jobRoot = getJobRoot(job.sessionId, job.id);
@@ -1743,7 +1743,6 @@ async function processShortJob(payload: ClipProcessJobData) {
         });
 
         const media = await detectMediaProperties(job.id, job.asset.sourcePath);
-        const crop = computeShortCrop(media.width, media.height, zoom, cropX);
 
         // Resolve captions: needs the request flag, an asset transcript, cues in
         // range, and libass support. Any miss degrades to a caption-less encode.
@@ -1771,7 +1770,13 @@ async function processShortJob(payload: ClipProcessJobData) {
             }
         }
 
-        const videoFilter = buildShortVideoFilter(crop, captionsApplied ? assFilePath : undefined);
+        const videoFilter = buildShortVideoFilter(
+            media.width,
+            media.height,
+            zoom,
+            cropX,
+            captionsApplied ? assFilePath : undefined,
+        );
 
         await assertJobNotCanceled(job.id);
         await enqueueProgressWrite(job.id, {
