@@ -738,6 +738,8 @@ video, audio {
 .shorts-transcript {
   max-height: 420px;
   overflow-y: auto;
+  box-sizing: border-box;
+  width: 100%;
   border: 1px solid var(--border);
   border-radius: 0.6rem;
   padding: 0.35rem;
@@ -927,9 +929,15 @@ video, audio {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  box-sizing: border-box;
+  width: 100%;
   border: 1px solid var(--border);
   border-radius: 0.6rem;
   padding: 0.75rem 1rem;
+}
+
+.shorts-source-row .btn {
+  flex: 0 0 auto;
 }
 
 .shorts-source-meta {
@@ -975,11 +983,17 @@ video, audio {
   justify-content: space-between;
   gap: 1rem;
   width: 100%;
+  box-sizing: border-box;
   border: 1px solid #99f6e4;
   background: #f0fdfa;
   border-radius: 0.75rem;
   padding: 0.9rem 1.1rem;
   margin-bottom: 1rem;
+}
+
+.results-shorts-cta .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .results-shorts-cta-title {
