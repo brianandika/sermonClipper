@@ -52,6 +52,19 @@ function getRequestedBaseName(job: Job): string | undefined {
   return trimmed.replace(/\.[^.]+$/, '');
 }
 
+// Duration of the kept output: the start..end span minus any removed middle
+// clips. Used as a fallback before the worker's measured duration is available.
+function getKeptDuration(job: Job): number {
+  const { startTime, endTime, clipStarts, clipEnds } = job.payload;
+  let total = endTime - startTime;
+  if (clipStarts && clipEnds && clipStarts.length === clipEnds.length) {
+    for (let i = 0; i < clipStarts.length; i += 1) {
+      total -= Math.max(0, clipEnds[i] - clipStarts[i]);
+    }
+  }
+  return Math.max(0, total);
+}
+
 export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const [currentJob, setCurrentJob] = useState(job);
   const [currentResult, setCurrentResult] = useState(result);
@@ -106,7 +119,9 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const audioUrl = getResultArtifact(currentResult.resultId, 'audio');
   const videoUrl = getResultArtifact(currentResult.resultId, 'video');
   const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
-  const duration = currentJob.payload.endTime - currentJob.payload.startTime;
+  // Prefer the worker's actual measured output duration (accounts for removed
+  // middle clips and crossfades); fall back to the kept-span estimate.
+  const duration = currentResult.duration ?? getKeptDuration(currentJob);
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
