@@ -70,6 +70,9 @@ function getKeptDuration(job: Job): number {
 export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const [currentJob, setCurrentJob] = useState(job);
   const [currentResult, setCurrentResult] = useState(result);
+  // Actual playable duration read from the video element, so "Final duration"
+  // is the exact number the player shows (not a separately-computed estimate).
+  const [mediaDuration, setMediaDuration] = useState<number | null>(null);
 
   useEffect(() => {
     setCurrentJob(job);
@@ -123,7 +126,9 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
   const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
   // Prefer the worker's actual measured output duration (accounts for removed
   // middle clips and crossfades); fall back to the kept-span estimate.
-  const duration = currentResult.duration ?? getKeptDuration(currentJob);
+  // Prefer the video element's real duration (matches the player exactly);
+  // fall back to the server value, then the kept-span estimate, before it loads.
+  const duration = mediaDuration ?? currentResult.duration ?? getKeptDuration(currentJob);
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
@@ -183,7 +188,16 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
           </div>
           {isVideoReady ? (
             <>
-              <video controls className="results-video-player">
+              <video
+                controls
+                className="results-video-player"
+                onLoadedMetadata={(e) => {
+                  const d = e.currentTarget.duration;
+                  if (Number.isFinite(d) && d > 0) {
+                    setMediaDuration(d);
+                  }
+                }}
+              >
                 <source src={videoUrl} type="video/mp4" />
                 Your browser doesn't support video playback.
               </video>
