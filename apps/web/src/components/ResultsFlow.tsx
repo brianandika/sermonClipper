@@ -12,7 +12,9 @@ function formatDuration(seconds: number): string {
     return '0:00';
   }
 
-  const totalSeconds = Math.round(seconds);
+  // Floor (not round) so this matches how the audio/video players display the
+  // time — a 28.5s clip shows 0:28 in the players, and Math.round would show 0:29.
+  const totalSeconds = Math.floor(seconds);
   const hrs = Math.floor(totalSeconds / 3600);
   const mins = Math.floor((totalSeconds % 3600) / 60);
   const secs = totalSeconds % 60;
