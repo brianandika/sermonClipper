@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { bootstrapSession } from './api';
+import { bootstrapSession, createShortsSourceFromJob } from './api';
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
 import ShortsFlow from './components/ShortsFlow';
@@ -22,6 +22,11 @@ function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // Shorts source + in-flight transcription lifted here so switching tabs never
+  // unmounts/re-triggers the Shorts flow (which used to spawn duplicate jobs).
+  const [shortsSource, setShortsSource] = useState<Asset | null>(null);
+  const [shortsPrepJobId, setShortsPrepJobId] = useState<string | null>(null);
+  const [shortsBusy, setShortsBusy] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,11 +69,29 @@ function App() {
     setFlow('results');
   };
 
+  // Entry to Shorts from a finished sermon (Results page or a completed Jobs
+  // row): reuse its MP4 + VTT as the source — no re-transcription.
+  const handleCreateShortsFromJob = async (sourceJob: Job) => {
+    setShortsBusy(true);
+    try {
+      const source = await createShortsSourceFromJob(sourceJob.jobId);
+      setShortsSource(source);
+      setShortsPrepJobId(null);
+      setFlow('shorts');
+    } catch (err) {
+      setError(`Could not start Shorts from that clip: ${err}`);
+    } finally {
+      setShortsBusy(false);
+    }
+  };
+
   const handleReset = () => {
     setAsset(null);
     setJob(null);
     setResult(null);
     setActiveJobId(null);
+    setShortsSource(null);
+    setShortsPrepJobId(null);
     setFlow('upload');
   };
 
@@ -87,8 +110,7 @@ function App() {
     {
       key: 'shorts',
       label: 'Shorts',
-      description: asset ? 'Make 9:16 vertical clips' : 'Upload media first',
-      disabled: !asset,
+      description: 'Make 9:16 vertical clips',
     },
     {
       key: 'jobs',
@@ -106,7 +128,7 @@ function App() {
   const pendingFlowLabel = navItems.find((item) => item.key === pendingFlow)?.label ?? 'another page';
 
   const completeNavigation = (nextFlow: AppFlow) => {
-    if ((nextFlow === 'editor' || nextFlow === 'shorts') && !asset) {
+    if (nextFlow === 'editor' && !asset) {
       return;
     }
     if (nextFlow === 'results' && (!result || !job)) {
@@ -197,14 +219,20 @@ function App() {
         {flow === 'editor' && asset && (
           <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleEditorCancel} />
         )}
-        {flow === 'shorts' && asset && (
-          <ShortsFlow asset={asset} />
+        {flow === 'shorts' && (
+          <ShortsFlow
+            uploadedAsset={asset}
+            source={shortsSource}
+            onSourceChange={setShortsSource}
+            prepJobId={shortsPrepJobId}
+            onPrepJobId={setShortsPrepJobId}
+          />
         )}
         {flow === 'jobs' && (
-          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onReset={handleReset} />
+          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onCreateShorts={handleCreateShortsFromJob} shortsBusy={shortsBusy} onReset={handleReset} />
         )}
         {flow === 'results' && result && job && (
-          <ResultsFlow result={result} job={job} />
+          <ResultsFlow result={result} job={job} onCreateShorts={handleCreateShortsFromJob} shortsBusy={shortsBusy} />
         )}
       </div>
 

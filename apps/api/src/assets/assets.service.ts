@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import type { Asset } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { Express } from "express";
 import { env } from "../config/env";
@@ -67,6 +67,57 @@ export class AssetsService {
         return this.prisma.asset.update({
             where: { id: assetId },
             data,
+        });
+    }
+
+    // Derive a "shorts source" asset from a completed sermon job: it references
+    // the job's output MP4 and VTT in place (no copy), so shorts reuse the
+    // existing transcript instead of re-transcribing. Deduped by derivedFromJobId
+    // so re-deriving the same job returns the same source.
+    async deriveShortsSource(sessionId: string, jobId: string) {
+        const job = await this.prisma.job.findFirst({
+            where: { id: jobId, sessionId },
+            include: { result: true },
+        });
+
+        if (!job) {
+            throw new NotFoundException("Job not found");
+        }
+
+        const videoPath = job.result?.videoPath?.trim();
+        if (job.status !== "completed" || !videoPath) {
+            throw new BadRequestException("This job has no finished video to make shorts from");
+        }
+
+        const existing = await this.prisma.asset.findFirst({
+            where: { sessionId, derivedFromJobId: jobId },
+        });
+        if (existing) {
+            return existing;
+        }
+
+        const transcriptPath = job.result?.transcriptPath?.trim() || null;
+        let fileSize = BigInt(0);
+        try {
+            fileSize = BigInt((await stat(videoPath)).size);
+        }
+        catch {
+            // Referenced file may already be gone (retention cleanup); a short
+            // export will surface that clearly. Keep the source registerable.
+        }
+
+        return this.prisma.asset.create({
+            data: {
+                id: randomUUID(),
+                sessionId,
+                originalFilename: basename(videoPath),
+                mimeType: "video/mp4",
+                fileSize,
+                sourcePath: videoPath,
+                transcriptPath,
+                status: "derived",
+                derivedFromJobId: jobId,
+            },
         });
     }
 }

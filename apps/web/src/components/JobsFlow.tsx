@@ -6,6 +6,8 @@ interface JobsFlowProps {
   currentSessionId: string | null;
   activeJobId: string | null;
   onOpenResult: (job: Job, result: Result) => void;
+  onCreateShorts: (job: Job) => void;
+  shortsBusy: boolean;
   onReset: () => void;
 }
 
@@ -53,7 +55,7 @@ function MiniBar({ label, value, color }: { label: string; value: number; color:
   );
 }
 
-export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onReset }: JobsFlowProps) {
+export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onCreateShorts, shortsBusy, onReset }: JobsFlowProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +170,10 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
               const isOwnedByCurrentSession = currentSessionId !== null && job.sessionId === currentSessionId;
               const canCancel = isOwnedByCurrentSession && ACTIVE_STATUSES.has(job.status);
               const canOpenResult = isOwnedByCurrentSession && Boolean(job.result?.audioPath);
+              const canCreateShorts = isOwnedByCurrentSession
+                && job.status === 'completed'
+                && Boolean(job.result?.videoPath)
+                && (job.payload?.kind ?? 'sermon') === 'sermon';
               const audioProgress = Math.max(0, Math.min(100, job.progress?.audioProgress ?? 0));
               const videoProgress = Math.max(0, Math.min(100, job.progress?.videoProgress ?? 0));
               const transcriptProgress = Math.max(0, Math.min(100, job.progress?.transcriptProgress ?? 0));
@@ -214,7 +220,12 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                           {rowBusy ? 'Opening...' : (job.status === 'completed' ? 'View Result' : 'Open Audio')}
                         </button>
                       ) : null}
-                      {!canCancel && !canOpenResult ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
+                      {canCreateShorts ? (
+                        <button type="button" className="btn" onClick={() => onCreateShorts(job)} disabled={shortsBusy} style={{ minWidth: '88px', background: '#0f766e' }}>
+                          {shortsBusy ? 'Opening...' : 'Create Shorts'}
+                        </button>
+                      ) : null}
+                      {!canCancel && !canOpenResult && !canCreateShorts ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
                     </div>
                   </td>
                 </tr>

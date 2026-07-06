@@ -51,12 +51,16 @@ model Asset {
   fps              Float?
   duration         Float?
   status           String
+  // When set, this asset is a "shorts source" derived (referenced in place) from
+  // a completed sermon job's result — used to dedup so re-deriving reuses it.
+  derivedFromJobId String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   session          Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   jobs             Job[]
 
   @@index([sessionId])
+  @@index([derivedFromJobId])
 }
 
 model Job {

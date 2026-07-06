@@ -94,6 +94,33 @@ export class JobsService {
     async create(sessionId: string, assetId: string, payload: CreateJobDto) {
         const kind = payload.kind ?? "sermon";
 
+        // Idempotency: never queue a second transcription for a source that is
+        // already being transcribed. Re-mounting the Shorts tab or double-clicks
+        // return the in-flight job instead of piling up duplicates.
+        if (kind === "transcribeSource") {
+            const activeTranscription = await this.prisma.job.findFirst({
+                where: {
+                    sessionId,
+                    assetId,
+                    status: {
+                        notIn: [
+                            SharedJobStatus.completed,
+                            SharedJobStatus.failed,
+                            SharedJobStatus.canceled,
+                            SharedJobStatus.expired,
+                        ],
+                    },
+                    payloadJson: { path: ["kind"], equals: "transcribeSource" },
+                },
+                include: { progress: true, result: true },
+                orderBy: { createdAt: "desc" },
+            });
+
+            if (activeTranscription) {
+                return activeTranscription;
+            }
+        }
+
         if (kind === "sermon") {
             validateClipRanges(payload);
         }

@@ -5,6 +5,8 @@ import { getJob, getResult, getResultArtifact } from '../api';
 interface ResultsFlowProps {
   job: Job;
   result: Result;
+  onCreateShorts: (job: Job) => void;
+  shortsBusy: boolean;
 }
 
 function formatDuration(seconds: number): string {
@@ -52,7 +54,7 @@ function getRequestedBaseName(job: Job): string | undefined {
   return trimmed.replace(/\.[^.]+$/, '');
 }
 
-export default function ResultsFlow({ job, result }: ResultsFlowProps) {
+export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }: ResultsFlowProps) {
   const [currentJob, setCurrentJob] = useState(job);
   const [currentResult, setCurrentResult] = useState(result);
 
@@ -137,6 +139,18 @@ export default function ResultsFlow({ job, result }: ResultsFlowProps) {
           <p className="results-summary-value">{formatDuration(duration)}</p>
         </article>
       </section>
+
+      {currentJob.status === 'completed' && Boolean(currentResult.videoPath) && (currentJob.payload.kind ?? 'sermon') === 'sermon' && (
+        <div className="results-shorts-cta">
+          <div>
+            <p className="results-shorts-cta-title">✂ Create Shorts from this clip</p>
+            <p className="results-shorts-cta-copy">Reuses this video and transcript — no re-transcription.</p>
+          </div>
+          <button type="button" className="btn" disabled={shortsBusy} onClick={() => onCreateShorts(currentJob)}>
+            {shortsBusy ? 'Opening…' : 'Create Shorts'}
+          </button>
+        </div>
+      )}
 
       <section className="results-grid" aria-label="Result artifacts">
         <article className="results-card">

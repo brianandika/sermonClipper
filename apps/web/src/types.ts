@@ -111,6 +111,7 @@ export interface UploadResponse {
   sourcePath: string;
   fps: number | null;
   duration: number | null;
+  transcriptPath: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;

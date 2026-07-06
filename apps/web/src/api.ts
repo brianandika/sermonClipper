@@ -49,6 +49,13 @@ export const getAsset = async (assetId: string): Promise<Asset> => {
   return data;
 };
 
+// Reuse a completed sermon's output MP4 + transcript as a shorts source
+// (referenced in place — no re-transcription). Returns the derived asset.
+export const createShortsSourceFromJob = async (jobId: string): Promise<Asset> => {
+  const { data } = await api.post(`/assets/from-job/${jobId}`);
+  return data;
+};
+
 export const getAssetFps = async (assetId: string): Promise<FpsResponse> => {
   const { data } = await api.get(`/assets/${assetId}/fps`);
   return data;

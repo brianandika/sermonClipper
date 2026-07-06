@@ -2,17 +2,27 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Asset, Job, Result } from '../types';
 import {
   createShortJob,
+  createShortsSourceFromJob,
   createTranscribeJob,
   getAsset,
   getAssetSourceUrl,
   getAssetTranscriptText,
   getJob,
+  getJobs,
   getResult,
   getResultArtifact,
+  uploadAsset,
 } from '../api';
 
 interface ShortsFlowProps {
-  asset: Asset;
+  // The asset the user uploaded in this session (if any) — offered as a source.
+  uploadedAsset: Asset | null;
+  // The chosen shorts source (lifted to App so switching tabs never restarts work).
+  source: Asset | null;
+  onSourceChange: (asset: Asset | null) => void;
+  // In-flight transcription job id for `source` (also lifted to App).
+  prepJobId: string | null;
+  onPrepJobId: (jobId: string | null) => void;
 }
 
 interface Cue {
@@ -37,15 +47,10 @@ interface Moment {
   message?: string;
 }
 
-type PrepPhase = 'preparing' | 'ready' | 'error';
-
 // A full-height 9:16 window spans (9/16) / (16/9) = 81/256 of a 16:9 frame's
-// width. Must match computeShortCrop / buildShortVideoFilter in the worker so
-// the CSS preview matches the encoded output.
+// width. Must match computeShortCrop / buildShortVideoFilter in the worker.
 const WINDOW_FRACTION = 81 / 256;
-
 const TERMINAL_STATUSES = ['completed', 'failed', 'canceled', 'expired'];
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let momentSeq = 0;
@@ -106,8 +111,7 @@ function slugify(value: string): string {
 
 function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
   const z = Math.max(1, zoom);
-  // Zoom tightens the crop in BOTH dimensions: height shrinks to 1/z (centered
-  // vertically) and width to (81/256)/z, mirroring computeShortCrop in the worker.
+  // Zoom tightens the crop in BOTH dimensions, mirroring computeShortCrop.
   const widthPct = (WINDOW_FRACTION / z) * 100;
   const heightPct = (1 / z) * 100;
   const leftPct = cropX * (100 - widthPct);
@@ -115,75 +119,124 @@ function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
   return { left: `${leftPct}%`, width: `${widthPct}%`, top: `${topPct}%`, height: `${heightPct}%` };
 }
 
-export default function ShortsFlow({ asset }: ShortsFlowProps) {
+export default function ShortsFlow({
+  uploadedAsset,
+  source,
+  onSourceChange,
+  prepJobId,
+  onPrepJobId,
+}: ShortsFlowProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const videoSourceUrl = useMemo(() => getAssetSourceUrl(asset.assetId), [asset.assetId]);
 
-  const [phase, setPhase] = useState<PrepPhase>('preparing');
-  const [prepMessage, setPrepMessage] = useState('Checking for a transcript…');
+  // Picker state
+  const [sermons, setSermons] = useState<Job[]>([]);
+  const [pickerError, setPickerError] = useState<string | null>(null);
+  const [pickerBusy, setPickerBusy] = useState(false);
+
+  // Transcription state
+  const [prepMessage, setPrepMessage] = useState('');
   const [prepError, setPrepError] = useState<string | null>(null);
+
+  // Editor state
   const [cues, setCues] = useState<Cue[]>([]);
-
-  const [duration, setDuration] = useState<number>(asset.duration ?? 0);
+  const [cuesError, setCuesError] = useState<string | null>(null);
+  const [duration, setDuration] = useState<number>(source?.duration ?? 0);
   const [currentTime, setCurrentTime] = useState(0);
-
   const [moments, setMoments] = useState<Moment[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Prepare the transcript once on entry: transcribe the source on demand if it
-  // has no transcript yet, then load the VTT cues for moment-picking.
+  const phase: 'picker' | 'needsTranscript' | 'editor' = !source
+    ? 'picker'
+    : source.transcriptPath
+      ? 'editor'
+      : 'needsTranscript';
+
+  const videoSourceUrl = useMemo(() => (source ? getAssetSourceUrl(source.assetId) : ''), [source]);
+
+  // Load recent processed sermons for the picker.
   useEffect(() => {
+    if (phase !== 'picker') return;
     let cancelled = false;
-
-    const prepare = async () => {
-      try {
-        setPhase('preparing');
-        setPrepError(null);
-        setPrepMessage('Checking for a transcript…');
-
-        const fresh = await getAsset(asset.assetId);
-        if (fresh.duration && !duration) {
-          setDuration(fresh.duration);
-        }
-
-        if (!fresh.transcriptPath) {
-          setPrepMessage('Transcribing the source video… this runs once per upload.');
-          const job = await createTranscribeJob(asset.assetId);
-
-          for (let attempt = 0; attempt < 1200; attempt += 1) {
-            if (cancelled) return;
-            const current = await getJob(job.jobId);
-            if (current.progress?.message) {
-              const pct = current.progress.transcriptProgress;
-              setPrepMessage(pct ? `${current.progress.message} (${pct}%)` : current.progress.message);
-            }
-            if (TERMINAL_STATUSES.includes(current.status)) {
-              if (current.status !== 'completed') {
-                throw new Error(current.failureReason || 'Transcription failed');
-              }
-              break;
-            }
-            await sleep(1500);
-          }
-        }
-
-        const vtt = await getAssetTranscriptText(asset.assetId);
+    setPickerError(null);
+    getJobs()
+      .then((jobs) => {
         if (cancelled) return;
-        setCues(parseVtt(vtt));
-        setPhase('ready');
-      } catch (err) {
-        if (cancelled) return;
-        setPrepError(err instanceof Error ? err.message : String(err));
-        setPhase('error');
-      }
-    };
-
-    prepare();
+        const done = jobs.filter(
+          (jb) => jb.status === 'completed' && Boolean(jb.result?.videoPath) && (jb.payload?.kind ?? 'sermon') === 'sermon',
+        );
+        setSermons(done);
+      })
+      .catch((err) => {
+        if (!cancelled) setPickerError(err instanceof Error ? err.message : String(err));
+      });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asset.assetId]);
+  }, [phase]);
+
+  // Poll the in-flight transcription; when it finishes, refresh the source so it
+  // has a transcriptPath and the editor opens. Resumes cleanly on re-mount
+  // because prepJobId lives in App state (and the API is idempotent).
+  useEffect(() => {
+    if (phase !== 'needsTranscript' || !prepJobId || !source) return;
+    let cancelled = false;
+    setPrepError(null);
+    const assetId = source.assetId;
+    (async () => {
+      for (let i = 0; i < 1200 && !cancelled; i += 1) {
+        const current = await getJob(prepJobId);
+        if (current.progress?.message) {
+          const pct = current.progress.transcriptProgress;
+          setPrepMessage(pct ? `${current.progress.message} (${pct}%)` : current.progress.message);
+        }
+        if (TERMINAL_STATUSES.includes(current.status)) {
+          if (current.status === 'completed') {
+            const updated = await getAsset(assetId);
+            if (!cancelled) {
+              onSourceChange(updated);
+              onPrepJobId(null);
+            }
+          } else if (!cancelled) {
+            setPrepError(current.failureReason || 'Transcription failed');
+            onPrepJobId(null);
+          }
+          return;
+        }
+        await sleep(1500);
+      }
+    })().catch((err) => {
+      if (!cancelled) setPrepError(err instanceof Error ? err.message : String(err));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, prepJobId, source, onSourceChange, onPrepJobId]);
+
+  // Load transcript cues once the source is transcript-ready.
+  useEffect(() => {
+    if (phase !== 'editor' || !source) return;
+    let cancelled = false;
+    setCuesError(null);
+    getAssetTranscriptText(source.assetId)
+      .then((text) => {
+        if (!cancelled) setCues(parseVtt(text));
+      })
+      .catch((err) => {
+        if (!cancelled) setCuesError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, source]);
+
+  // Reset the editor when the underlying source changes (not on transcript refresh).
+  useEffect(() => {
+    setMoments([]);
+    setActiveId(null);
+    setCurrentTime(0);
+    setCues([]);
+    setDuration(source?.duration ?? 0);
+  }, [source?.assetId]);
 
   const activeMoment = moments.find((moment) => moment.id === activeId) ?? null;
   const previewCropX = activeMoment?.cropX ?? 0.5;
@@ -195,6 +248,57 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
     return value;
   };
 
+  // ---- Source picker handlers ------------------------------------------------
+  const useSermon = async (sermonJob: Job) => {
+    setPickerBusy(true);
+    setPickerError(null);
+    try {
+      const derived = await createShortsSourceFromJob(sermonJob.jobId);
+      onSourceChange(derived);
+    } catch (err) {
+      setPickerError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPickerBusy(false);
+    }
+  };
+
+  const continueWithUpload = () => {
+    if (uploadedAsset) onSourceChange(uploadedAsset);
+  };
+
+  const uploadNew = async (file: File) => {
+    setPickerBusy(true);
+    setPickerError(null);
+    try {
+      const uploaded = await uploadAsset(file);
+      onSourceChange(uploaded);
+    } catch (err) {
+      setPickerError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPickerBusy(false);
+    }
+  };
+
+  const changeSource = () => {
+    onSourceChange(null);
+    onPrepJobId(null);
+    setPrepError(null);
+  };
+
+  // ---- Transcription handler -------------------------------------------------
+  const startTranscription = async () => {
+    if (!source) return;
+    setPrepError(null);
+    setPrepMessage('Queuing transcription…');
+    try {
+      const job = await createTranscribeJob(source.assetId);
+      onPrepJobId(job.jobId);
+    } catch (err) {
+      setPrepError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // ---- Moment / export handlers ---------------------------------------------
   const updateMoment = (id: string, patch: Partial<Moment>) => {
     setMoments((prev) => prev.map((moment) => (moment.id === id ? { ...moment, ...patch } : moment)));
   };
@@ -249,6 +353,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
   };
 
   const exportMoment = async (id: string) => {
+    if (!source) return;
     const moment = moments.find((item) => item.id === id);
     if (!moment) return;
 
@@ -262,7 +367,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
 
     try {
       const job = await createShortJob({
-        assetId: asset.assetId,
+        assetId: source.assetId,
         startTime: moment.start,
         endTime: moment.end,
         cropX: moment.cropX,
@@ -297,7 +402,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
   };
 
   // "Export all" (re)exports every short that isn't already mid-export, so the
-  // count keeps including shorts you've already processed (and re-runs them).
+  // count keeps including shorts you've already processed.
   const exportAll = () => {
     moments
       .filter((moment) => moment.status !== 'processing')
@@ -308,47 +413,134 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
 
   const exportAllCount = moments.filter((m) => m.status !== 'processing').length;
 
-  if (phase === 'preparing') {
+  // ---- Render ---------------------------------------------------------------
+  if (phase === 'picker') {
     return (
-      <div className="container">
-        <div className="shorts-prep">
-          <h1 className="shorts-title">Preparing Shorts</h1>
-          <p className="shorts-prep-message">{prepMessage}</p>
-          <div className="shorts-spinner" aria-hidden="true" />
-          <p className="shorts-hint">
-            We transcribe the uploaded video so you can pick moments and burn in captions. This can take a few minutes
-            for a long sermon; you only pay this cost once per upload.
-          </p>
-        </div>
+      <div className="container shorts-page">
+        <header className="shorts-header">
+          <p className="shorts-eyebrow">Shorts</p>
+          <h1 className="shorts-title">Choose a source</h1>
+          <p className="shorts-subtitle">Make 9:16 vertical clips from a finished sermon (reuses its transcript) or from a new upload.</p>
+        </header>
+
+        {pickerError && <p className="shorts-error">{pickerError}</p>}
+
+        <section className="shorts-source-group">
+          <h2 className="shorts-section-title">★ From a processed sermon <span className="shorts-badge">recommended · no re-transcription</span></h2>
+          {sermons.length === 0 ? (
+            <p className="shorts-hint">No finished sermons yet. Process one in the Editor, or upload a new video below.</p>
+          ) : (
+            <div className="shorts-source-list">
+              {sermons.map((sermon) => {
+                const name = sermon.payload?.outputVideoFilename || sermon.payload?.outputAudioFilename || `Sermon ${sermon.jobId.slice(0, 8)}`;
+                const hasTranscript = Boolean(sermon.result?.transcriptPath);
+                return (
+                  <div key={sermon.jobId} className="shorts-source-row">
+                    <div className="shorts-source-meta">
+                      <span className="shorts-source-name">{name}</span>
+                      <span className="shorts-source-sub">
+                        {new Date(sermon.createdAt).toLocaleString()} · {hasTranscript ? '✓ transcript' : 'no transcript (will prepare once)'}
+                      </span>
+                    </div>
+                    <button type="button" className="btn" disabled={pickerBusy} onClick={() => useSermon(sermon)}>
+                      Use this
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {uploadedAsset && (
+          <section className="shorts-source-group">
+            <h2 className="shorts-section-title">Continue with current upload</h2>
+            <div className="shorts-source-row">
+              <div className="shorts-source-meta">
+                <span className="shorts-source-name">{uploadedAsset.originalFilename}</span>
+                <span className="shorts-source-sub">
+                  {uploadedAsset.transcriptPath ? '✓ transcript' : 'no transcript yet — prepared once when you continue'}
+                </span>
+              </div>
+              <button type="button" className="btn" disabled={pickerBusy} onClick={continueWithUpload}>
+                Continue
+              </button>
+            </div>
+          </section>
+        )}
+
+        <section className="shorts-source-group">
+          <h2 className="shorts-section-title">Upload a new video</h2>
+          <p className="shorts-hint">Transcribed once here (a few minutes for a full sermon).</p>
+          <label className="btn shorts-upload-btn">
+            {pickerBusy ? 'Uploading…' : 'Choose file…'}
+            <input
+              type="file"
+              accept="video/*"
+              style={{ display: 'none' }}
+              disabled={pickerBusy}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void uploadNew(file);
+                event.target.value = '';
+              }}
+            />
+          </label>
+        </section>
       </div>
     );
   }
 
-  if (phase === 'error') {
+  if (phase === 'needsTranscript') {
     return (
-      <div className="container">
-        <div className="shorts-prep">
-          <h1 className="shorts-title">Shorts unavailable</h1>
-          <p className="shorts-error">{prepError}</p>
-          <p className="shorts-hint">
-            A transcript is required to build shorts. Confirm the worker has transcription enabled, then revisit this
-            tab.
-          </p>
-        </div>
+      <div className="container shorts-page">
+        <header className="shorts-header">
+          <p className="shorts-eyebrow">Shorts</p>
+          <h1 className="shorts-title">Prepare transcript</h1>
+          <p className="shorts-subtitle">Source: {source?.originalFilename}</p>
+        </header>
+
+        {prepJobId ? (
+          <div className="shorts-prep">
+            <p className="shorts-prep-message">{prepMessage || 'Transcribing…'}</p>
+            <div className="shorts-spinner" aria-hidden="true" />
+            <p className="shorts-hint">This runs once for this source. You can leave this tab — it won't restart.</p>
+          </div>
+        ) : (
+          <div className="shorts-prep">
+            {prepError && <p className="shorts-error">{prepError}</p>}
+            <p className="shorts-hint">This video has no transcript yet. Preparing one lets you pick moments and burn in captions. It only runs once.</p>
+            <div className="shorts-prep-actions">
+              <button type="button" className="btn" onClick={startTranscription}>
+                {prepError ? 'Retry transcript' : 'Prepare transcript & continue'}
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={changeSource}>
+                Choose a different source
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
+  // phase === 'editor'
   return (
     <div className="container shorts-page">
       <header className="shorts-header">
         <p className="shorts-eyebrow">Shorts</p>
-        <h1 className="shorts-title">Build 9:16 vertical clips</h1>
-        <p className="shorts-subtitle">
-          Read the transcript, pick moments, frame each 9:16 window, and export burned-in-caption shorts. Each short is
-          its own MP4.
-        </p>
+        <div className="shorts-source-header">
+          <div>
+            <h1 className="shorts-title">Build 9:16 vertical clips</h1>
+            <p className="shorts-subtitle">Source: {source?.originalFilename}</p>
+          </div>
+          <button type="button" className="btn btn-secondary" onClick={changeSource}>
+            Change source
+          </button>
+        </div>
       </header>
+
+      {cuesError && <p className="shorts-error">Couldn’t load the transcript: {cuesError}</p>}
 
       <div className="shorts-layout">
         <section className="shorts-preview-col">
@@ -363,7 +555,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
               }}
               onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
             >
-              <source src={videoSourceUrl} type={asset.mimeType || 'video/mp4'} />
+              <source src={videoSourceUrl} type={source?.mimeType || 'video/mp4'} />
               Your browser does not support video playback.
             </video>
             <div className="shorts-crop-window" style={cropWindowStyle(previewCropX, previewZoom)} aria-hidden="true">
@@ -373,7 +565,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
           <p className="shorts-playhead">
             Playhead: <strong>{formatTimecode(currentTime)}</strong>
             {duration > 0 ? ` / ${formatTimecode(duration)}` : ''}
-            {activeMoment ? ` · Framing “${activeMoment.title}”` : ' · Select a moment to frame it'}
+            {activeMoment ? ` · Framing “${activeMoment.title}”` : ' · Select a short to frame it'}
           </p>
           <button type="button" className="btn add-clip" onClick={addBlankMoment}>
             Add another short
@@ -383,7 +575,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
         <section className="shorts-transcript-col">
           <h2 className="shorts-section-title">Transcript</h2>
           {cues.length === 0 ? (
-            <p className="shorts-hint">No transcript cues were found for this video.</p>
+            <p className="shorts-hint">No transcript cues were found for this source.</p>
           ) : (
             <div className="shorts-transcript" role="list">
               {cues.map((cue, index) => (
@@ -406,7 +598,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
 
       <section className="shorts-moments">
         <div className="shorts-moments-head">
-          <h2 className="shorts-section-title">Moments ({moments.length})</h2>
+          <h2 className="shorts-section-title">Shorts ({moments.length})</h2>
           {moments.length > 0 && (
             <button type="button" className="btn" onClick={exportAll} disabled={exportAllCount === 0}>
               Export all shorts ({exportAllCount})
@@ -456,9 +648,7 @@ export default function ShortsFlow({ asset }: ShortsFlowProps) {
                       <input
                         type="text"
                         value={moment.start.toFixed(3)}
-                        onChange={(event) =>
-                          updateMoment(moment.id, { start: Number.parseFloat(event.target.value) })
-                        }
+                        onChange={(event) => updateMoment(moment.id, { start: Number.parseFloat(event.target.value) })}
                       />
                     </label>
                     <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent(moment.id, 'start')}>

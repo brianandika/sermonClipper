@@ -125,6 +125,18 @@ export class AssetsController {
         return this.toAssetResponse(asset);
     }
 
+    // Reuse a completed sermon's output MP4 + transcript as a shorts source
+    // (referenced in place, no re-transcription).
+    @Post("from-job/:jobId")
+    async createShortsSource(
+        @Req() request: Request,
+        @Param("jobId") jobId: string,
+    ): Promise<AssetResponse> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const asset = await this.assetsService.deriveShortsSource(session.id, jobId);
+        return this.toAssetResponse(asset);
+    }
+
     @Get(":assetId/source")
     async getAssetSource(
         @Req() request: Request,
