@@ -211,7 +211,7 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                       ) : null}
                       {canOpenResult ? (
                         <button type="button" className="btn" onClick={() => handleViewResult(job)} disabled={rowBusy} style={{ minWidth: '88px' }}>
-                          {rowBusy ? 'Opening...' : (job.status === 'completed' ? 'View Result' : 'Open Audio')}
+                          {rowBusy ? 'Opening...' : (job.result?.videoPath ? 'View Result' : 'Open Audio')}
                         </button>
                       ) : null}
                       {!canCancel && !canOpenResult ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
