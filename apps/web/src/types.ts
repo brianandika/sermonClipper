@@ -70,6 +70,7 @@ export interface Job {
     cropX?: number;
     zoom?: number;
     captions?: boolean;
+    title?: string;
   };
   failureReason: string | null;
   createdAt: string;

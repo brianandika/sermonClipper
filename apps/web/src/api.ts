@@ -125,9 +125,17 @@ export const createShortJob = async (params: {
   cropX: number;
   zoom: number;
   captions: boolean;
+  title?: string;
   outputVideoFilename?: string;
 }): Promise<Job> => {
   const { data } = await api.post('/jobs', { kind: 'short', ...params });
+  return data;
+};
+
+// All persisted shorts for a source asset (newest first) — the saved shorts
+// shown in the Shorts editor so they survive tab switches and reloads.
+export const getShortsForAsset = async (assetId: string): Promise<Job[]> => {
+  const { data } = await api.get(`/jobs/shorts/${assetId}`);
   return data;
 };
 

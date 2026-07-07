@@ -882,6 +882,46 @@ video, audio {
   font-size: 0.85rem;
 }
 
+/* Saved (persisted) shorts library inside the editor */
+.shorts-saved {
+  width: 100%;
+  margin-bottom: 1.5rem;
+}
+
+.shorts-saved-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.shorts-saved-card {
+  box-sizing: border-box;
+  gap: 0.6rem;
+}
+
+.shorts-saved-title {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.shorts-saved-player {
+  max-height: 320px;
+  align-self: center;
+}
+
+.shorts-saved-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.shorts-saved-actions .results-download-btn {
+  margin-top: 0;
+}
+
 /* Stacked per-short editors (each with its own player + transcript) */
 .shorts-editor-toolbar {
   display: flex;

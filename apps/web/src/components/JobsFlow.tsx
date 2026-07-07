@@ -222,7 +222,7 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                       ) : null}
                       {canCreateShorts ? (
                         <button type="button" className="btn" onClick={() => onCreateShorts(job)} disabled={shortsBusy} style={{ minWidth: '88px', background: '#0f766e' }}>
-                          {shortsBusy ? 'Opening...' : 'Create Shorts'}
+                          {shortsBusy ? 'Opening...' : 'Shorts'}
                         </button>
                       ) : null}
                       {!canCancel && !canOpenResult && !canCreateShorts ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}

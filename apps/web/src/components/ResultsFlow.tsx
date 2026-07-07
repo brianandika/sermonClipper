@@ -143,11 +143,11 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
       {currentJob.status === 'completed' && Boolean(currentResult.videoPath) && (currentJob.payload.kind ?? 'sermon') === 'sermon' && (
         <div className="results-shorts-cta">
           <div>
-            <p className="results-shorts-cta-title">✂ Create Shorts from this clip</p>
-            <p className="results-shorts-cta-copy">Reuses this video and transcript — no re-transcription.</p>
+            <p className="results-shorts-cta-title">✂ Create or view Shorts from this clip</p>
+            <p className="results-shorts-cta-copy">Reuses this video and transcript — no re-transcription. Your exported shorts are saved here for re-download.</p>
           </div>
           <button type="button" className="btn" disabled={shortsBusy} onClick={() => onCreateShorts(currentJob)}>
-            {shortsBusy ? 'Opening…' : 'Create Shorts'}
+            {shortsBusy ? 'Opening…' : 'Open Shorts'}
           </button>
         </div>
       )}

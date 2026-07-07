@@ -11,6 +11,7 @@ import {
   getJobs,
   getResult,
   getResultArtifact,
+  getShortsForAsset,
   updateAssetTranscript,
   uploadAsset,
 } from '../api';
@@ -331,6 +332,10 @@ export default function ShortsFlow({
   const [cues, setCues] = useState<Cue[]>([]);
   const [cuesError, setCuesError] = useState<string | null>(null);
   const [moments, setMoments] = useState<Moment[]>([]);
+  // Persisted, already-exported shorts for this source (loaded from the DB so
+  // they survive tab switches / reloads). The `moments` above are only the
+  // in-progress shorts being framed; on export they graduate into savedShorts.
+  const [savedShorts, setSavedShorts] = useState<Job[]>([]);
 
   // Transcript editing state
   const [editingTranscript, setEditingTranscript] = useState(false);
@@ -426,8 +431,47 @@ export default function ShortsFlow({
   useEffect(() => {
     setMoments([]);
     setCues([]);
+    setSavedShorts([]);
     setEditingTranscript(false);
   }, [source?.assetId]);
+
+  // Load this source's already-exported shorts from the DB so they persist
+  // across tab switches and reloads.
+  const loadSavedShorts = async (assetId: string): Promise<boolean> => {
+    try {
+      const jobs = await getShortsForAsset(assetId);
+      setSavedShorts(jobs.filter((jb) => jb.status === 'completed' && Boolean(jb.result?.videoPath)));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (phase !== 'editor' || !source) return;
+    void loadSavedShorts(source.assetId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, source]);
+
+  // Re-frame a saved short: seed a new editable moment from its parameters.
+  const reframeSaved = (job: Job) => {
+    const p = job.payload;
+    const id = nextMomentId();
+    const fallbackName = p.outputVideoFilename ? p.outputVideoFilename.replace(/\.[^.]+$/, '') : '';
+    setMoments((prev) => [
+      ...prev,
+      {
+        id,
+        title: p.title || fallbackName || `Short ${prev.length + 1}`,
+        start: p.startTime ?? 0,
+        end: p.endTime ?? 0,
+        cropX: p.cropX ?? 0.5,
+        zoom: p.zoom ?? 1,
+        captions: p.captions !== false,
+        status: 'idle',
+      },
+    ]);
+  };
 
   // ---- Transcript editing handlers ------------------------------------------
   const openTranscriptEditor = () => {
@@ -565,6 +609,7 @@ export default function ShortsFlow({
         cropX: moment.cropX,
         zoom: moment.zoom,
         captions: moment.captions,
+        title: moment.title,
         outputVideoFilename: `${slugify(moment.title)}.mp4`,
       });
       updateMoment(id, { jobId: job.jobId });
@@ -587,7 +632,15 @@ export default function ShortsFlow({
       }
 
       const result = await getResult(job.jobId);
-      updateMoment(id, { status: 'completed', result, message: finished.progress?.message ?? 'Short ready' });
+      // Graduate the finished short into the persisted "Saved shorts" list so it
+      // survives tab switches; only drop it from the in-progress editors if the
+      // saved list refreshed successfully.
+      const graduated = await loadSavedShorts(source.assetId);
+      if (graduated) {
+        removeMoment(id);
+      } else {
+        updateMoment(id, { status: 'completed', result, message: finished.progress?.message ?? 'Short ready' });
+      }
     } catch (err) {
       updateMoment(id, { status: 'failed', message: err instanceof Error ? err.message : String(err) });
     }
@@ -772,6 +825,43 @@ export default function ShortsFlow({
                 </button>
               </div>
             ))}
+          </div>
+        </section>
+      )}
+
+      {savedShorts.length > 0 && (
+        <section className="shorts-saved">
+          <h2 className="shorts-section-title">Saved shorts ({savedShorts.length})</h2>
+          <p className="shorts-hint">Exported shorts for this source — they stay here across tabs and reloads. Re-download any time, or “Re-frame” to tweak and export a new version.</p>
+          <div className="shorts-saved-grid">
+            {savedShorts.map((job) => {
+              const resultId = job.result?.resultId;
+              const title = job.payload?.title
+                || (job.payload?.outputVideoFilename ? job.payload.outputVideoFilename.replace(/\.[^.]+$/, '') : 'Short');
+              return (
+                <article key={job.jobId} className="results-card shorts-saved-card">
+                  <div className="results-card-head">
+                    <h3 className="shorts-saved-title">{title}</h3>
+                    <span className="results-chip">MP4</span>
+                  </div>
+                  {resultId && (
+                    <video controls className="results-video-player shorts-saved-player">
+                      <source src={getResultArtifact(resultId, 'video')} type="video/mp4" />
+                    </video>
+                  )}
+                  <div className="shorts-saved-actions">
+                    {resultId && (
+                      <a className="btn results-download-btn" href={getResultArtifact(resultId, 'video')} download={`${slugify(title)}.mp4`}>
+                        Download
+                      </a>
+                    )}
+                    <button type="button" className="btn btn-secondary" onClick={() => reframeSaved(job)}>
+                      Re-frame
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}

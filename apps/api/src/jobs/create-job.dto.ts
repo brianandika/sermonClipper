@@ -77,6 +77,10 @@ export class CreateJobDto {
     captions?: boolean;
 
     @IsOptional()
+    @IsString()
+    title?: string;
+
+    @IsOptional()
     @IsArray()
     @Type(() => Number)
     @IsNumber({}, { each: true })

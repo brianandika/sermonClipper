@@ -240,6 +240,25 @@ export class JobsService {
         });
     }
 
+    // All "short" jobs for a given source asset (session-scoped), newest first —
+    // the persisted "saved shorts" for that source.
+    async listShortsForAsset(sessionId: string, assetId: string) {
+        return this.prisma.job.findMany({
+            where: {
+                sessionId,
+                assetId,
+                payloadJson: { path: ["kind"], equals: "short" },
+            },
+            include: {
+                progress: true,
+                result: true,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+    }
+
     async cancelOwnedJob(sessionId: string, jobId: string) {
         const job = await this.getOwnedJob(sessionId, jobId);
 
