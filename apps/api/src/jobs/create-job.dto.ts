@@ -64,6 +64,16 @@ export class CreateJobDto {
     @Max(1)
     cropX?: number;
 
+    // "short" only: 9:16 window vertical position (0..1). Optional for backward
+    // compatibility — a missing value is treated as 0.5 (centered).
+    @IsOptional()
+    @ValidateIf((o: CreateJobDto) => o.kind === "short" && o.cropY !== undefined)
+    @Type(() => Number)
+    @IsNumber()
+    @Min(0)
+    @Max(1)
+    cropY?: number;
+
     // Below 1 = zoom out (letterboxed); above 1 = zoom in (tighter crop).
     @ValidateIf((o: CreateJobDto) => o.kind === "short")
     @Type(() => Number)

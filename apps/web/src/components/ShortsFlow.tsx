@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Asset, Job, Result } from '../types';
 import {
   createShortJob,
@@ -41,6 +41,7 @@ interface Moment {
   start: number;
   end: number;
   cropX: number;
+  cropY: number;
   zoom: number;
   captions: boolean;
   status: MomentStatus;
@@ -113,15 +114,25 @@ function slugify(value: string): string {
   return base || 'short';
 }
 
-function cropWindowStyle(cropX: number, zoom: number): CSSProperties {
+// The 9:16 window's size as a % of the video box for a given zoom. Zoom in (>1)
+// tightens the window in both dimensions; zoom out (<1) grows it until it
+// captures the whole frame (clamped to the video box — the export adds black
+// bars around what exceeds the frame).
+function windowExtent(zoom: number): { widthPct: number; heightPct: number } {
   const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
-  // Zoom in (>1) tightens the window in both dimensions; zoom out (<1) grows it
-  // until it captures the whole frame (clamped to the video box — the export
-  // adds black bars around what exceeds the frame).
-  const widthPct = Math.min(100, (WINDOW_FRACTION / z) * 100);
-  const heightPct = Math.min(100, (1 / z) * 100);
+  return {
+    widthPct: Math.min(100, (WINDOW_FRACTION / z) * 100),
+    heightPct: Math.min(100, (1 / z) * 100),
+  };
+}
+
+function cropWindowStyle(cropX: number, cropY: number, zoom: number): CSSProperties {
+  const { widthPct, heightPct } = windowExtent(zoom);
+  // cropX/cropY slide the window across whatever slack the zoom leaves. At
+  // zoom <= 1 the window fills the height (heightPct = 100), so cropY has no
+  // travel and the window pins to the top — matching the worker's centered crop.
   const leftPct = cropX * (100 - widthPct);
-  const topPct = (100 - heightPct) / 2;
+  const topPct = cropY * (100 - heightPct);
   return { left: `${leftPct}%`, width: `${widthPct}%`, top: `${topPct}%`, height: `${heightPct}%` };
 }
 
@@ -150,6 +161,19 @@ interface ShortEditorProps {
 function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, onRemove, onExport }: ShortEditorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const previewRef = useRef<HTMLDivElement>(null);
+  // Live drag of the 9:16 window over the video. We track the pointer's start
+  // position, the crop values when the drag began, and how many pixels the box
+  // can travel on each axis, so the box follows the cursor 1:1.
+  const dragRef = useRef<{
+    pointerId: number;
+    startPx: number;
+    startPy: number;
+    startCropX: number;
+    startCropY: number;
+    travelXpx: number;
+    travelYpx: number;
+  } | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(fallbackDuration);
 
@@ -180,6 +204,46 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
     onChange({ [bound]: Number(clampTime(videoRef.current.currentTime).toFixed(3)) } as Partial<Moment>);
   };
 
+  // --- Drag the 9:16 window directly on the video ---------------------------
+  const onCropPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = previewRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const { widthPct, heightPct } = windowExtent(moment.zoom);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startPx: event.clientX,
+      startPy: event.clientY,
+      startCropX: moment.cropX,
+      startCropY: moment.cropY,
+      travelXpx: (rect.width * (100 - widthPct)) / 100,
+      travelYpx: (rect.height * (100 - heightPct)) / 100,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  const onCropPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const patch: Partial<Moment> = {};
+    if (drag.travelXpx > 0) {
+      const next = drag.startCropX + (event.clientX - drag.startPx) / drag.travelXpx;
+      patch.cropX = Math.min(1, Math.max(0, next));
+    }
+    if (drag.travelYpx > 0) {
+      const next = drag.startCropY + (event.clientY - drag.startPy) / drag.travelYpx;
+      patch.cropY = Math.min(1, Math.max(0, next));
+    }
+    if (patch.cropX !== undefined || patch.cropY !== undefined) onChange(patch);
+  };
+  const endCropDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
   const error = moment.status !== 'completed' ? momentError(moment, duration) : null;
 
   return (
@@ -198,7 +262,7 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
 
       <div className="shorts-editor-body">
         <section className="shorts-preview-col">
-          <div className="shorts-preview">
+          <div className="shorts-preview" ref={previewRef}>
             <video
               ref={videoRef}
               className="shorts-video"
@@ -212,9 +276,21 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
               <source src={videoUrl} type={source.mimeType || 'video/mp4'} />
               Your browser does not support video playback.
             </video>
-            <div className="shorts-crop-window" style={cropWindowStyle(moment.cropX, moment.zoom)} aria-hidden="true">
+            <div className="shorts-crop-window" style={cropWindowStyle(moment.cropX, moment.cropY, moment.zoom)} aria-hidden="true">
               <span className="shorts-crop-label">9:16</span>
             </div>
+            {/* Transparent drag layer: reposition the 9:16 window by dragging on
+                the video. Stops short of the bottom so the native controls stay
+                clickable. */}
+            <div
+              className="shorts-crop-drag"
+              role="presentation"
+              title="Drag to reframe"
+              onPointerDown={onCropPointerDown}
+              onPointerMove={onCropPointerMove}
+              onPointerUp={endCropDrag}
+              onPointerCancel={endCropDrag}
+            />
           </div>
 
           <p className="shorts-playhead">
@@ -246,9 +322,16 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
             <button type="button" className="btn" onClick={() => jumpTo(moment.end)}>Jump</button>
           </div>
 
+          <p className="shorts-reframe-hint">Tip: drag on the video to reframe the 9:16 window.</p>
+
           <label className="shorts-slider">
             <span>Horizontal position</span>
             <input type="range" min={0} max={1} step={0.01} value={moment.cropX} onChange={(event) => onChange({ cropX: Number.parseFloat(event.target.value) })} />
+          </label>
+
+          <label className="shorts-slider">
+            <span>Vertical position{moment.zoom <= 1 ? ' — zoom in to use' : ''}</span>
+            <input type="range" min={0} max={1} step={0.01} value={moment.cropY} disabled={moment.zoom <= 1} onChange={(event) => onChange({ cropY: Number.parseFloat(event.target.value) })} />
           </label>
 
           <label className="shorts-slider">
@@ -466,6 +549,7 @@ export default function ShortsFlow({
         start: p.startTime ?? 0,
         end: p.endTime ?? 0,
         cropX: p.cropX ?? 0.5,
+        cropY: p.cropY ?? 0.5,
         zoom: p.zoom ?? 1,
         captions: p.captions !== false,
         status: 'idle',
@@ -577,6 +661,7 @@ export default function ShortsFlow({
         start: 0,
         end: Number((end > 0 ? end : 20).toFixed(3)),
         cropX: 0.5,
+        cropY: 0.5,
         zoom: 1,
         captions: true,
         status: 'idle',
@@ -607,6 +692,7 @@ export default function ShortsFlow({
         startTime: moment.start,
         endTime: moment.end,
         cropX: moment.cropX,
+        cropY: moment.cropY,
         zoom: moment.zoom,
         captions: moment.captions,
         title: moment.title,

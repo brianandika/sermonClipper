@@ -234,9 +234,32 @@ test("buildShortVideoFilter (zoom>=1) crops then scales, with optional captions"
         `crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y},scale=1080:1920,setsar=1`,
     );
     assert.equal(
-        buildShortVideoFilter(1920, 1080, 1, 0.5, "/w/captions.ass"),
+        buildShortVideoFilter(1920, 1080, 1, 0.5, 0.5, "/w/captions.ass"),
         `crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y},scale=1080:1920,setsar=1,ass=/w/captions.ass`,
     );
+});
+
+test("computeShortCrop cropY pans the window vertically once zoomed in", () => {
+    // zoom=1: window is full height, so cropY has no slack (stays at top=0).
+    assert.equal(computeShortCrop(1920, 1080, 1, 0.5, 0).y, 0);
+    assert.equal(computeShortCrop(1920, 1080, 1, 0.5, 1).y, 0);
+
+    // zoom=2: window is half height, leaving vertical slack to pan.
+    const top = computeShortCrop(1920, 1080, 2, 0.5, 0);
+    const mid = computeShortCrop(1920, 1080, 2, 0.5, 0.5);
+    const bottom = computeShortCrop(1920, 1080, 2, 0.5, 1);
+    assert.equal(top.y, 0, "cropY=0 pins to top");
+    assert.equal(bottom.y, 1080 - bottom.cropH, "cropY=1 pins to bottom");
+    assert.ok(mid.y > top.y && mid.y < bottom.y, "cropY=0.5 sits between");
+    for (const c of [top, mid, bottom]) assert.equal(c.y % 2, 0, "y stays even");
+});
+
+test("computeShortCrop cropY clamps out of range and defaults to centered", () => {
+    const centered = computeShortCrop(1920, 1080, 2, 0.5);
+    assert.equal(computeShortCrop(1920, 1080, 2, 0.5, 0.5).y, centered.y, "omitted cropY == 0.5");
+    assert.equal(computeShortCrop(1920, 1080, 2, 0.5, -3).y, 0, "cropY<0 clamps to top");
+    const crop = computeShortCrop(1920, 1080, 2, 0.5, 5);
+    assert.equal(crop.y, 1080 - crop.cropH, "cropY>1 clamps to bottom");
 });
 
 test("buildShortVideoFilter (zoom<1) scales down and letterboxes with black bars", () => {

@@ -104,10 +104,12 @@ export interface CreateJobRequest {
     transitionDuration?: number;
     fps?: number;
     hardware?: HardwareOption;
-    // "short" only: horizontal crop position (0..1) and zoom (>=1) for the
-    // 9:16 window, whether to burn in captions (default true), and a display
-    // title (persisted so saved shorts show a friendly name).
+    // "short" only: horizontal/vertical crop position (0..1) and zoom (>=1) for
+    // the 9:16 window, whether to burn in captions (default true), and a display
+    // title (persisted so saved shorts show a friendly name). cropY only has an
+    // effect once zoomed in (a zoom=1 window already spans the full height).
     cropX?: number;
+    cropY?: number;
     zoom?: number;
     captions?: boolean;
     title?: string;

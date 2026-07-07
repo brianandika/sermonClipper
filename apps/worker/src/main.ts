@@ -1724,6 +1724,7 @@ async function processShortJob(payload: ClipProcessJobData) {
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
         const zoom = clamp(request.zoom && request.zoom > 0 ? request.zoom : 1, MIN_ZOOM, MAX_ZOOM);
         const cropX = clamp(request.cropX ?? 0.5, 0, 1);
+        const cropY = clamp(request.cropY ?? 0.5, 0, 1);
         const wantCaptions = request.captions !== false;
         const jobRoot = getJobRoot(job.sessionId, job.id);
         const assFilePath = join(jobRoot, "captions.ass");
@@ -1775,6 +1776,7 @@ async function processShortJob(payload: ClipProcessJobData) {
             media.height,
             zoom,
             cropX,
+            cropY,
             captionsApplied ? assFilePath : undefined,
         );
 

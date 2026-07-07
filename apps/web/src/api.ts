@@ -123,6 +123,7 @@ export const createShortJob = async (params: {
   startTime: number;
   endTime: number;
   cropX: number;
+  cropY: number;
   zoom: number;
   captions: boolean;
   title?: string;

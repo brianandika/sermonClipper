@@ -23,8 +23,16 @@ export interface ShortCrop {
 
 // From a source W x H frame and zoom z (>=1), carve a full-height-ish 9:16
 // window. Higher zoom -> smaller window (tighter crop). cropX in [0,1] slides
-// the window left..right. Mirrors the CSS preview in ShortsFlow.tsx.
-export function computeShortCrop(width: number, height: number, zoom: number, cropX: number): ShortCrop {
+// the window left..right; cropY in [0,1] slides it top..bottom (only has slack
+// once zoomed in, since a zoom=1 window already spans the full height).
+// Mirrors the CSS preview in ShortsFlow.tsx.
+export function computeShortCrop(
+    width: number,
+    height: number,
+    zoom: number,
+    cropX: number,
+    cropY = 0.5,
+): ShortCrop {
     const safeWidth = Math.max(2, Math.floor(width));
     const safeHeight = Math.max(2, Math.floor(height));
     const z = Math.max(1, Number.isFinite(zoom) ? zoom : 1);
@@ -38,7 +46,8 @@ export function computeShortCrop(width: number, height: number, zoom: number, cr
 
     const maxX = Math.max(0, safeWidth - cropW);
     const x = Math.min(Math.max(0, evenFloor(maxX * clamp(cropX, 0, 1))), maxX);
-    const y = Math.max(0, evenFloor((safeHeight - cropH) / 2));
+    const maxY = Math.max(0, safeHeight - cropH);
+    const y = Math.min(Math.max(0, evenFloor(maxY * clamp(cropY, 0, 1))), maxY);
 
     return { cropW, cropH, x, y };
 }
@@ -322,18 +331,23 @@ function toEven(value: number): number {
 //   drops, more of the frame is visible; below ~0.316 the full width fits and
 //   black bars appear top and bottom (and eventually the sides too). cropX pans
 //   horizontally whenever the scaled frame is wider than the canvas.
+//
+// cropY (0..1) pans the 9:16 window vertically in the zoom >= 1 case; it only
+// has slack once zoomed in (a zoom=1 window already spans the full height). In
+// the zoom < 1 case the frame is letterboxed, so vertical stays centered.
 export function buildShortVideoFilter(
     width: number,
     height: number,
     zoom: number,
     cropX: number,
+    cropY = 0.5,
     assFilePath?: string,
 ): string {
     const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number.isFinite(zoom) ? zoom : 1));
     const chain: string[] = [];
 
     if (z >= 1) {
-        const crop = computeShortCrop(width, height, z, cropX);
+        const crop = computeShortCrop(width, height, z, cropX, cropY);
         chain.push(`crop=${crop.cropW}:${crop.cropH}:${crop.x}:${crop.y}`, "scale=1080:1920", "setsar=1");
     }
     else {

@@ -68,6 +68,7 @@ export interface Job {
     fps?: number;
     hardware?: HardwareOption;
     cropX?: number;
+    cropY?: number;
     zoom?: number;
     captions?: boolean;
     title?: string;

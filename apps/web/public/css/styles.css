@@ -712,6 +712,23 @@ video, audio {
   pointer-events: none;
 }
 
+/* Transparent surface that captures drags to reposition the 9:16 window. Sits
+   above the crop-window visual but stops short of the bottom so the native
+   video controls stay clickable. */
+.shorts-crop-drag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 48px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.shorts-crop-drag:active {
+  cursor: grabbing;
+}
+
 .shorts-crop-label {
   position: absolute;
   top: 6px;
@@ -862,6 +879,17 @@ video, audio {
 
 .shorts-slider input[type='range'] {
   width: 100%;
+}
+
+.shorts-slider input[type='range']:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.shorts-reframe-hint {
+  margin: 0.1rem 0 0;
+  color: #64748b;
+  font-size: 0.8rem;
 }
 
 .shorts-toggle {
