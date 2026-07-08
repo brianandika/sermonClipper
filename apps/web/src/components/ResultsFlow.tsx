@@ -9,23 +9,6 @@ interface ResultsFlowProps {
   shortsBusy: boolean;
 }
 
-function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return '0:00';
-  }
-
-  const totalSeconds = Math.round(seconds);
-  const hrs = Math.floor(totalSeconds / 3600);
-  const mins = Math.floor((totalSeconds % 3600) / 60);
-  const secs = totalSeconds % 60;
-
-  if (hrs > 0) {
-    return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  }
-
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
-
 function formatStatus(value: string): string {
   return value
     .split('_')
@@ -108,7 +91,8 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
   const audioUrl = getResultArtifact(currentResult.resultId, 'audio');
   const videoUrl = getResultArtifact(currentResult.resultId, 'video');
   const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
-  const duration = currentJob.payload.endTime - currentJob.payload.startTime;
+  // Prefer the worker's actual measured output duration (accounts for removed
+  // middle clips and crossfades); fall back to the kept-span estimate.
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
@@ -133,10 +117,6 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
         <article className="results-summary-card">
           <p className="results-summary-label">Status</p>
           <p className="results-summary-value">{formatStatus(currentJob.status)}</p>
-        </article>
-        <article className="results-summary-card">
-          <p className="results-summary-label">Final duration</p>
-          <p className="results-summary-value">{formatDuration(duration)}</p>
         </article>
       </section>
 
