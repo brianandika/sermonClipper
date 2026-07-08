@@ -13,7 +13,6 @@ import {
   getResultArtifact,
   getShortsForAsset,
   updateAssetTranscript,
-  uploadAsset,
 } from '../api';
 
 interface ShortsFlowProps {
@@ -25,6 +24,9 @@ interface ShortsFlowProps {
   // In-flight transcription job id for `source` (also lifted to App).
   prepJobId: string | null;
   onPrepJobId: (jobId: string | null) => void;
+  // The sermon/transcribe job that exported shorts should group under in the
+  // job queue (null when the Shorts tab is opened without an originating job).
+  parentJobId: string | null;
 }
 
 interface Cue {
@@ -173,6 +175,7 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
     startCropY: number;
     travelXpx: number;
     travelYpx: number;
+    dragging: boolean;
   } | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(fallbackDuration);
@@ -205,6 +208,10 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
   };
 
   // --- Drag the 9:16 window directly on the video ---------------------------
+  // The transparent layer sits over the video, so a plain tap would otherwise be
+  // swallowed. We distinguish a tap from a drag with a small pixel threshold:
+  // below it the pointerup toggles play/pause; above it we reframe the window.
+  const DRAG_THRESHOLD_PX = 4;
   const onCropPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = previewRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -217,30 +224,46 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
       startCropY: moment.cropY,
       travelXpx: (rect.width * (100 - widthPct)) / 100,
       travelYpx: (rect.height * (100 - heightPct)) / 100,
+      dragging: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
+    // No preventDefault yet — keep a plain tap available for play/pause.
   };
   const onCropPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startPx;
+    const dy = event.clientY - drag.startPy;
+    if (!drag.dragging) {
+      if (Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) return;
+      drag.dragging = true;
+    }
+    event.preventDefault();
     const patch: Partial<Moment> = {};
     if (drag.travelXpx > 0) {
-      const next = drag.startCropX + (event.clientX - drag.startPx) / drag.travelXpx;
-      patch.cropX = Math.min(1, Math.max(0, next));
+      patch.cropX = Math.min(1, Math.max(0, drag.startCropX + dx / drag.travelXpx));
     }
     if (drag.travelYpx > 0) {
-      const next = drag.startCropY + (event.clientY - drag.startPy) / drag.travelYpx;
-      patch.cropY = Math.min(1, Math.max(0, next));
+      patch.cropY = Math.min(1, Math.max(0, drag.startCropY + dy / drag.travelYpx));
     }
     if (patch.cropX !== undefined || patch.cropY !== undefined) onChange(patch);
   };
   const endCropDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    const wasDrag = drag.dragging;
     dragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    // A tap (no drag) toggles playback, restoring click-to-play/pause that the
+    // transparent reframe layer would otherwise eat.
+    if (!wasDrag && event.type === 'pointerup') {
+      const video = videoRef.current;
+      if (video) {
+        if (video.paused) void video.play().catch(() => {});
+        else video.pause();
+      }
     }
   };
 
@@ -401,6 +424,7 @@ export default function ShortsFlow({
   onSourceChange,
   prepJobId,
   onPrepJobId,
+  parentJobId,
 }: ShortsFlowProps) {
   // Picker state
   const [sermons, setSermons] = useState<Job[]>([]);
@@ -608,19 +632,6 @@ export default function ShortsFlow({
     if (uploadedAsset) onSourceChange(uploadedAsset);
   };
 
-  const uploadNew = async (file: File) => {
-    setPickerBusy(true);
-    setPickerError(null);
-    try {
-      const uploaded = await uploadAsset(file);
-      onSourceChange(uploaded);
-    } catch (err) {
-      setPickerError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPickerBusy(false);
-    }
-  };
-
   const changeSource = () => {
     onSourceChange(null);
     onPrepJobId(null);
@@ -697,6 +708,7 @@ export default function ShortsFlow({
         captions: moment.captions,
         title: moment.title,
         outputVideoFilename: `${slugify(moment.title)}.mp4`,
+        parentJobId: parentJobId ?? undefined,
       });
       updateMoment(id, { jobId: job.jobId });
 
@@ -751,7 +763,11 @@ export default function ShortsFlow({
         <header className="shorts-header">
           <p className="shorts-eyebrow">Shorts</p>
           <h1 className="shorts-title">Choose a source</h1>
-          <p className="shorts-subtitle">Make 9:16 vertical clips from a finished sermon (reuses its transcript) or from a new upload.</p>
+          <p className="shorts-subtitle">
+            Start a short by choosing <strong>Upload for Shorts</strong> on the Upload tab, or open a
+            finished sermon or transcription from Jobs / Results. You can also reuse a processed
+            sermon below.
+          </p>
         </header>
 
         {pickerError && <p className="shorts-error">{pickerError}</p>}
@@ -799,25 +815,6 @@ export default function ShortsFlow({
             </div>
           </section>
         )}
-
-        <section className="shorts-source-group">
-          <h2 className="shorts-section-title">Upload a new video</h2>
-          <p className="shorts-hint">Transcribed once here (a few minutes for a full sermon).</p>
-          <label className="btn shorts-upload-btn">
-            {pickerBusy ? 'Uploading…' : 'Choose file…'}
-            <input
-              type="file"
-              accept="video/*"
-              style={{ display: 'none' }}
-              disabled={pickerBusy}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void uploadNew(file);
-                event.target.value = '';
-              }}
-            />
-          </label>
-        </section>
       </div>
     );
   }

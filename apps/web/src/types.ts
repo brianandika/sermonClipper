@@ -72,6 +72,7 @@ export interface Job {
     zoom?: number;
     captions?: boolean;
     title?: string;
+    parentJobId?: string;
   };
   failureReason: string | null;
   createdAt: string;

@@ -128,6 +128,7 @@ export const createShortJob = async (params: {
   captions: boolean;
   title?: string;
   outputVideoFilename?: string;
+  parentJobId?: string;
 }): Promise<Job> => {
   const { data } = await api.post('/jobs', { kind: 'short', ...params });
   return data;

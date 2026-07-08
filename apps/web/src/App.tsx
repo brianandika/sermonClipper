@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { bootstrapSession, createShortsSourceFromJob } from './api';
+import { bootstrapSession, createShortsSourceFromJob, createTranscribeJob, getAsset } from './api';
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
 import ShortsFlow from './components/ShortsFlow';
@@ -26,6 +26,9 @@ function App() {
   // unmounts/re-triggers the Shorts flow (which used to spawn duplicate jobs).
   const [shortsSource, setShortsSource] = useState<Asset | null>(null);
   const [shortsPrepJobId, setShortsPrepJobId] = useState<string | null>(null);
+  // The job that a short's exports should group under in the queue: the sermon
+  // job (reuse path) or the transcribe job (standalone-upload-for-shorts path).
+  const [shortsParentJobId, setShortsParentJobId] = useState<string | null>(null);
   const [shortsBusy, setShortsBusy] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,6 +59,41 @@ function App() {
     setFlow('editor');
   };
 
+  // "Upload for Shorts": skip the editor, queue a transcribe-only job, and land
+  // on the Jobs tab where that job is visible. When it completes the user opens
+  // it (from the queue) to build shorts.
+  const handleUploadForShorts = async (uploadedAsset: Asset) => {
+    setAsset(uploadedAsset);
+    setShortsSource(uploadedAsset);
+    try {
+      const prepJob = await createTranscribeJob(uploadedAsset.assetId);
+      setShortsPrepJobId(prepJob.jobId);
+      setShortsParentJobId(prepJob.jobId);
+      setActiveJobId(prepJob.jobId);
+      setFlow('jobs');
+    } catch (err) {
+      setError(`Could not start transcription: ${err}`);
+    }
+  };
+
+  // Open the Shorts editor from a completed transcribe-only job in the queue.
+  // The asset is now transcript-ready, so the Shorts tab opens straight into
+  // the moment picker.
+  const handleOpenShortsForAsset = async (sourceJob: Job) => {
+    setShortsBusy(true);
+    try {
+      const source = await getAsset(sourceJob.assetId);
+      setShortsSource(source);
+      setShortsPrepJobId(null);
+      setShortsParentJobId(sourceJob.jobId);
+      setFlow('shorts');
+    } catch (err) {
+      setError(`Could not open Shorts for that transcription: ${err}`);
+    } finally {
+      setShortsBusy(false);
+    }
+  };
+
   const handleEditorSuccess = (createdJob: Job) => {
     setJob(createdJob);
     setActiveJobId(createdJob.jobId);
@@ -77,6 +115,7 @@ function App() {
       const source = await createShortsSourceFromJob(sourceJob.jobId);
       setShortsSource(source);
       setShortsPrepJobId(null);
+      setShortsParentJobId(sourceJob.jobId);
       setFlow('shorts');
     } catch (err) {
       setError(`Could not start Shorts from that clip: ${err}`);
@@ -92,6 +131,7 @@ function App() {
     setActiveJobId(null);
     setShortsSource(null);
     setShortsPrepJobId(null);
+    setShortsParentJobId(null);
     setFlow('upload');
   };
 
@@ -108,11 +148,6 @@ function App() {
       disabled: !asset,
     },
     {
-      key: 'shorts',
-      label: 'Shorts',
-      description: 'Make 9:16 vertical clips',
-    },
-    {
       key: 'jobs',
       label: 'Jobs',
       description: 'Monitor queue activity',
@@ -122,6 +157,11 @@ function App() {
       label: 'Results',
       description: result ? 'Review finished output' : 'Available after completion',
       disabled: !result || !job,
+    },
+    {
+      key: 'shorts',
+      label: 'Shorts',
+      description: 'Make 9:16 vertical clips',
     },
   ];
 
@@ -215,7 +255,7 @@ function App() {
           </nav>
         </header>
 
-        {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} />}
+        {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} onUploadForShorts={handleUploadForShorts} />}
         {flow === 'editor' && asset && (
           <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleEditorCancel} />
         )}
@@ -226,10 +266,11 @@ function App() {
             onSourceChange={setShortsSource}
             prepJobId={shortsPrepJobId}
             onPrepJobId={setShortsPrepJobId}
+            parentJobId={shortsParentJobId}
           />
         )}
         {flow === 'jobs' && (
-          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onCreateShorts={handleCreateShortsFromJob} shortsBusy={shortsBusy} onReset={handleReset} />
+          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onCreateShorts={handleCreateShortsFromJob} onOpenShortsForAsset={handleOpenShortsForAsset} shortsBusy={shortsBusy} onReset={handleReset} />
         )}
         {flow === 'results' && result && job && (
           <ResultsFlow result={result} job={job} onCreateShorts={handleCreateShortsFromJob} shortsBusy={shortsBusy} />

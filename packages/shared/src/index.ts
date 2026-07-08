@@ -113,6 +113,9 @@ export interface CreateJobRequest {
     zoom?: number;
     captions?: boolean;
     title?: string;
+    // "short" only: the sermon or transcribe job this short was cut from. Used
+    // purely to group a source's exported shorts under its row in the job queue.
+    parentJobId?: string;
 }
 
 export interface JobResponse {

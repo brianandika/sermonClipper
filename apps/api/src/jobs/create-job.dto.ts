@@ -90,6 +90,12 @@ export class CreateJobDto {
     @IsString()
     title?: string;
 
+    // "short" only: the sermon/transcribe job this short groups under in the
+    // queue. Metadata only — the worker ignores it.
+    @IsOptional()
+    @IsString()
+    parentJobId?: string;
+
     @IsOptional()
     @IsArray()
     @Type(() => Number)

@@ -4,11 +4,15 @@ import { Asset } from '../types';
 
 interface UploadFlowProps {
   onSuccess: (asset: Asset) => void;
+  onUploadForShorts: (asset: Asset) => void;
 }
 
-export default function UploadFlow({ onSuccess }: UploadFlowProps) {
+type UploadIntent = 'clip' | 'shorts';
+
+export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowProps) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [intent, setIntent] = useState<UploadIntent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
 
@@ -20,31 +24,40 @@ export default function UploadFlow({ onSuccess }: UploadFlowProps) {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Both buttons share one upload path; only the destination differs.
+  const upload = async (chosen: UploadIntent) => {
     if (!file) return;
 
     setUploading(true);
+    setIntent(chosen);
     setProgress(0);
     try {
       const response = await uploadAsset(file, (percent) => setProgress(percent));
       setProgress(100);
-      
+
       // Fetch full asset details
       const asset = await getAsset(response.assetId);
-      onSuccess(asset);
+      if (chosen === 'shorts') {
+        onUploadForShorts(asset);
+      } else {
+        onSuccess(asset);
+      }
     } catch (err) {
       setError(`Upload failed: ${err}`);
       setUploading(false);
+      setIntent(null);
     }
   };
+
+  const busyLabel = (target: UploadIntent) =>
+    uploading && intent === target ? `Uploading... ${progress}%` : null;
 
   return (
     <div className="container">
       <h1>Upload Video</h1>
-      <p>Select a video file to begin</p>
+      <p>Select a video file, then choose what to do with it.</p>
 
-      <form onSubmit={handleSubmit} className="grid">
+      <div className="grid">
         <div className="flex">
           <input
             type="file"
@@ -53,11 +66,33 @@ export default function UploadFlow({ onSuccess }: UploadFlowProps) {
             onChange={handleFileChange}
             disabled={uploading}
           />
-          <button type="submit" className="btn" disabled={!file || uploading}>
-            {uploading ? `Uploading... ${progress}%` : 'Upload'}
+        </div>
+
+        <div className="flex" style={{ gap: '0.75rem', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn"
+            disabled={!file || uploading}
+            onClick={() => upload('clip')}
+          >
+            {busyLabel('clip') ?? 'Upload for Clipping'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={!file || uploading}
+            onClick={() => upload('shorts')}
+            style={{ background: '#0f766e' }}
+          >
+            {busyLabel('shorts') ?? 'Upload for Shorts'}
           </button>
         </div>
-      </form>
+      </div>
+
+      <p style={{ marginTop: '0.75rem', color: '#64748b', fontSize: '0.9rem' }}>
+        <strong>Clipping</strong> opens the editor to trim the sermon.{' '}
+        <strong>Shorts</strong> transcribes the video so you can cut 9:16 vertical clips from it.
+      </p>
 
       {error && <p style={{ color: 'red', marginTop: '1rem' }}>{error}</p>}
 
