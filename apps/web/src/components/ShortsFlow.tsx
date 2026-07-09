@@ -2,13 +2,11 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import { Asset, Job, Result } from '../types';
 import {
   createShortJob,
-  createShortsSourceFromJob,
   createTranscribeJob,
   getAsset,
   getAssetSourceUrl,
   getAssetTranscriptText,
   getJob,
-  getJobs,
   getResult,
   getResultArtifact,
   getShortsForAsset,
@@ -16,10 +14,9 @@ import {
 } from '../api';
 
 interface ShortsFlowProps {
-  // The asset the user uploaded in this session (if any) — offered as a source.
-  uploadedAsset: Asset | null;
-  // The chosen shorts source (lifted to App so switching tabs never restarts work).
-  source: Asset | null;
+  // The chosen shorts source. Always set before the Shorts tab is shown — it is
+  // only reachable via a job's "Shorts" action or a result page's "Open Shorts".
+  source: Asset;
   onSourceChange: (asset: Asset | null) => void;
   // In-flight transcription job id for `source` (also lifted to App).
   prepJobId: string | null;
@@ -419,18 +416,12 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
 }
 
 export default function ShortsFlow({
-  uploadedAsset,
   source,
   onSourceChange,
   prepJobId,
   onPrepJobId,
   parentJobId,
 }: ShortsFlowProps) {
-  // Picker state
-  const [sermons, setSermons] = useState<Job[]>([]);
-  const [pickerError, setPickerError] = useState<string | null>(null);
-  const [pickerBusy, setPickerBusy] = useState(false);
-
   // Transcription state
   const [prepMessage, setPrepMessage] = useState('');
   const [prepError, setPrepError] = useState<string | null>(null);
@@ -450,34 +441,9 @@ export default function ShortsFlow({
   const [savingTranscript, setSavingTranscript] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
 
-  const phase: 'picker' | 'needsTranscript' | 'editor' = !source
-    ? 'picker'
-    : source.transcriptPath
-      ? 'editor'
-      : 'needsTranscript';
+  const phase: 'needsTranscript' | 'editor' = source.transcriptPath ? 'editor' : 'needsTranscript';
 
   const sourceDuration = source?.duration ?? 0;
-
-  // Load recent processed sermons for the picker.
-  useEffect(() => {
-    if (phase !== 'picker') return;
-    let cancelled = false;
-    setPickerError(null);
-    getJobs()
-      .then((jobs) => {
-        if (cancelled) return;
-        const done = jobs.filter(
-          (jb) => jb.status === 'completed' && Boolean(jb.result?.videoPath) && (jb.payload?.kind ?? 'sermon') === 'sermon',
-        );
-        setSermons(done);
-      })
-      .catch((err) => {
-        if (!cancelled) setPickerError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [phase]);
 
   // Poll the in-flight transcription; when it finishes, refresh the source so it
   // has a transcriptPath and the editor opens. Resumes cleanly on re-mount
@@ -614,30 +580,6 @@ export default function ShortsFlow({
     }
   };
 
-  // ---- Source picker handlers ------------------------------------------------
-  const useSermon = async (sermonJob: Job) => {
-    setPickerBusy(true);
-    setPickerError(null);
-    try {
-      const derived = await createShortsSourceFromJob(sermonJob.jobId);
-      onSourceChange(derived);
-    } catch (err) {
-      setPickerError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPickerBusy(false);
-    }
-  };
-
-  const continueWithUpload = () => {
-    if (uploadedAsset) onSourceChange(uploadedAsset);
-  };
-
-  const changeSource = () => {
-    onSourceChange(null);
-    onPrepJobId(null);
-    setPrepError(null);
-  };
-
   // ---- Transcription handler -------------------------------------------------
   const startTranscription = async () => {
     if (!source) return;
@@ -757,68 +699,6 @@ export default function ShortsFlow({
   const exportAllCount = moments.filter((m) => m.status !== 'processing').length;
 
   // ---- Render ---------------------------------------------------------------
-  if (phase === 'picker') {
-    return (
-      <div className="container shorts-page">
-        <header className="shorts-header">
-          <p className="shorts-eyebrow">Shorts</p>
-          <h1 className="shorts-title">Choose a source</h1>
-          <p className="shorts-subtitle">
-            Start a short by choosing <strong>Upload for Shorts</strong> on the Upload tab, or open a
-            finished sermon or transcription from Jobs / Results. You can also reuse a processed
-            sermon below.
-          </p>
-        </header>
-
-        {pickerError && <p className="shorts-error">{pickerError}</p>}
-
-        <section className="shorts-source-group">
-          <h2 className="shorts-section-title">★ From a processed sermon <span className="shorts-badge">recommended · no re-transcription</span></h2>
-          {sermons.length === 0 ? (
-            <p className="shorts-hint">No finished sermons yet. Process one in the Editor, or upload a new video below.</p>
-          ) : (
-            <div className="shorts-source-list">
-              {sermons.map((sermon) => {
-                const name = sermon.payload?.outputVideoFilename || sermon.payload?.outputAudioFilename || `Sermon ${sermon.jobId.slice(0, 8)}`;
-                const hasTranscript = Boolean(sermon.result?.transcriptPath);
-                return (
-                  <div key={sermon.jobId} className="shorts-source-row">
-                    <div className="shorts-source-meta">
-                      <span className="shorts-source-name">{name}</span>
-                      <span className="shorts-source-sub">
-                        {new Date(sermon.createdAt).toLocaleString()} · {hasTranscript ? '✓ transcript' : 'no transcript (will prepare once)'}
-                      </span>
-                    </div>
-                    <button type="button" className="btn" disabled={pickerBusy} onClick={() => useSermon(sermon)}>
-                      Use this
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {uploadedAsset && (
-          <section className="shorts-source-group">
-            <h2 className="shorts-section-title">Continue with current upload</h2>
-            <div className="shorts-source-row">
-              <div className="shorts-source-meta">
-                <span className="shorts-source-name">{uploadedAsset.originalFilename}</span>
-                <span className="shorts-source-sub">
-                  {uploadedAsset.transcriptPath ? '✓ transcript' : 'no transcript yet — prepared once when you continue'}
-                </span>
-              </div>
-              <button type="button" className="btn" disabled={pickerBusy} onClick={continueWithUpload}>
-                Continue
-              </button>
-            </div>
-          </section>
-        )}
-      </div>
-    );
-  }
-
   if (phase === 'needsTranscript') {
     return (
       <div className="container shorts-page">
@@ -842,9 +722,6 @@ export default function ShortsFlow({
               <button type="button" className="btn" onClick={startTranscription}>
                 {prepError ? 'Retry transcript' : 'Prepare transcript & continue'}
               </button>
-              <button type="button" className="btn btn-secondary" onClick={changeSource}>
-                Choose a different source
-              </button>
             </div>
           </div>
         )}
@@ -865,9 +742,6 @@ export default function ShortsFlow({
           <div className="shorts-header-actions">
             <button type="button" className="btn btn-secondary" onClick={openTranscriptEditor} disabled={cues.length === 0 || editingTranscript}>
               Edit transcript
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={changeSource}>
-              Change source
             </button>
           </div>
         </div>
