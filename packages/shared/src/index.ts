@@ -116,6 +116,9 @@ export interface CreateJobRequest {
     cropY?: number;
     zoom?: number;
     captions?: boolean;
+    // "short" only: append the church end card (a branded 9:16 image) after the
+    // clip, with a quick crossfade into it and a 3s hold. Default true.
+    endCard?: boolean;
     title?: string;
     // "short" only: the sermon or transcribe job this short was cut from. Used
     // purely to group a source's exported shorts under its row in the job queue.

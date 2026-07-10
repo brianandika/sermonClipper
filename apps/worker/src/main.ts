@@ -68,6 +68,7 @@ const runtimeEnv = {
     whisperComputeType: process.env.WHISPER_COMPUTE_TYPE ?? "auto",
     whisperLanguage: process.env.WHISPER_LANGUAGE ?? "en",
     whisperScript: process.env.WHISPER_SCRIPT?.trim() || "",
+    shortsEndCardPath: process.env.SHORTS_ENDCARD_PATH?.trim() || "",
 };
 const defaultIntroDurationSeconds = 5;
 const defaultFadeDurationSeconds = 1;
@@ -75,6 +76,9 @@ const defaultIntroTransitionDurationSeconds = 0.5;
 const defaultAudioTransitionDurationSeconds = 1;
 const outputWidth = 1920;
 const outputHeight = 1080;
+// Shorts end card: a quick crossfade into the branded 9:16 image, then a hold.
+const endCardFadeSeconds = 0.5;
+const endCardHoldSeconds = 3;
 const defaultFps = 30;
 const defaultIntroSampleRate = 44100;
 const pendingArtifactPath = "";
@@ -1003,6 +1007,25 @@ function resolveTranscribeScript() {
     return null;
 }
 
+// Resolve the bundled church end card, mirroring resolveTranscribeScript's
+// cwd-based candidate search (prod cwd=/app, workspace dev cwd=apps/worker),
+// with a SHORTS_ENDCARD_PATH override taking precedence.
+function resolveEndCardImage() {
+    const candidates = [
+        runtimeEnv.shortsEndCardPath,
+        join(process.cwd(), "apps/worker/assets/shorts-endcard.png"),
+        join(process.cwd(), "assets/shorts-endcard.png"),
+    ].filter((candidate) => candidate.length > 0);
+
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
 async function runTranscribeProcess(jobId: string, args: string[], onProgress?: (fraction: number) => void) {
     await assertJobNotCanceled(jobId);
 
@@ -1726,6 +1749,7 @@ async function processShortJob(payload: ClipProcessJobData) {
         const cropX = clamp(request.cropX ?? 0.5, 0, 1);
         const cropY = clamp(request.cropY ?? 0.5, 0, 1);
         const wantCaptions = request.captions !== false;
+        const wantEndCard = request.endCard !== false;
         const jobRoot = getJobRoot(job.sessionId, job.id);
         const assFilePath = join(jobRoot, "captions.ass");
         const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "short-video");
@@ -1780,6 +1804,21 @@ async function processShortJob(payload: ClipProcessJobData) {
             captionsApplied ? assFilePath : undefined,
         );
 
+        // Resolve the end card: needs the request flag and the bundled image on
+        // disk. A miss degrades to the plain clip (no end card).
+        let endCardApplied = false;
+        let endCardNote = "";
+        let endCardPath: string | null = null;
+        if (wantEndCard) {
+            endCardPath = resolveEndCardImage();
+            if (endCardPath) {
+                endCardApplied = true;
+            }
+            else {
+                endCardNote = "end card skipped: image not found";
+            }
+        }
+
         await assertJobNotCanceled(job.id);
         await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.encoding_video,
@@ -1791,27 +1830,78 @@ async function processShortJob(payload: ClipProcessJobData) {
         });
 
         try {
-            await runFfmpeg(job.id, [
-                "-hide_banner",
-                "-y",
-                "-ss",
-                String(startTime),
-                "-i",
-                job.asset.sourcePath,
-                "-t",
-                String(duration),
-                "-vf",
-                videoFilter,
-                ...getVideoEncodingArgs(effectiveHardware),
-                "-c:a",
-                "aac",
-                "-movflags",
-                "+faststart",
-                outputVideoPath,
-            ], {
-                totalDurationSec: duration,
-                onProgress: createBandReporter(job.id, "videoProgress", 5, 100),
-            });
+            if (endCardApplied && endCardPath) {
+                // Single pass: crop/scale/caption the clip, then crossfade into the
+                // 9:16 end card and hold. Both branches of xfade must share size,
+                // fps, pixel format, SAR, and timebase, so normalize each.
+                const fade = Math.min(endCardFadeSeconds, Math.max(0, duration - 0.05));
+                const holdWithFade = fade + endCardHoldSeconds;
+                const xfadeOffset = Math.max(0, duration - fade);
+                const totalDuration = duration + endCardHoldSeconds;
+                const norm = `fps=${defaultFps},format=yuv420p,setsar=1,settb=AVTB`;
+                const filterComplex = [
+                    `[0:v]${videoFilter},${norm}[body]`,
+                    `[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,`
+                        + `pad=1080:1920:(ow-iw)/2:(oh-ih)/2,${norm}[card]`,
+                    `[body][card]xfade=transition=fade:duration=${fade}:offset=${xfadeOffset}[vout]`,
+                    `[0:a]afade=t=out:st=${xfadeOffset}:d=${fade},apad=whole_dur=${totalDuration}[aout]`,
+                ].join(";");
+
+                await runFfmpeg(job.id, [
+                    "-hide_banner",
+                    "-y",
+                    "-ss",
+                    String(startTime),
+                    "-t",
+                    String(duration),
+                    "-i",
+                    job.asset.sourcePath,
+                    "-loop",
+                    "1",
+                    "-t",
+                    String(holdWithFade),
+                    "-i",
+                    endCardPath,
+                    "-filter_complex",
+                    filterComplex,
+                    "-map",
+                    "[vout]",
+                    "-map",
+                    "[aout]",
+                    ...getVideoEncodingArgs(effectiveHardware),
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    outputVideoPath,
+                ], {
+                    totalDurationSec: totalDuration,
+                    onProgress: createBandReporter(job.id, "videoProgress", 5, 100),
+                });
+            }
+            else {
+                await runFfmpeg(job.id, [
+                    "-hide_banner",
+                    "-y",
+                    "-ss",
+                    String(startTime),
+                    "-i",
+                    job.asset.sourcePath,
+                    "-t",
+                    String(duration),
+                    "-vf",
+                    videoFilter,
+                    ...getVideoEncodingArgs(effectiveHardware),
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    outputVideoPath,
+                ], {
+                    totalDurationSec: duration,
+                    onProgress: createBandReporter(job.id, "videoProgress", 5, 100),
+                });
+            }
         }
         finally {
             await rm(assFilePath, { force: true });
@@ -1864,9 +1954,10 @@ async function processShortJob(payload: ClipProcessJobData) {
             stageProgress: 100,
             overallProgress: 100,
             videoProgress: 100,
-            message: captionsApplied
-                ? "Short ready"
-                : (captionNote ? `Short ready (${captionNote})` : "Short ready"),
+            message: (() => {
+                const notes = [captionNote, endCardNote].filter((note) => note.length > 0);
+                return notes.length > 0 ? `Short ready (${notes.join("; ")})` : "Short ready";
+            })(),
         });
     }
     finally {

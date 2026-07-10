@@ -86,6 +86,11 @@ export class CreateJobDto {
     @IsBoolean()
     captions?: boolean;
 
+    // "short" only: append the branded church end card (default true).
+    @IsOptional()
+    @IsBoolean()
+    endCard?: boolean;
+
     @IsOptional()
     @IsString()
     title?: string;

@@ -71,6 +71,7 @@ export interface Job {
     cropY?: number;
     zoom?: number;
     captions?: boolean;
+    endCard?: boolean;
     title?: string;
     parentJobId?: string;
   };

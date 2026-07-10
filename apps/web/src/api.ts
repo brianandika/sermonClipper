@@ -126,6 +126,7 @@ export const createShortJob = async (params: {
   cropY: number;
   zoom: number;
   captions: boolean;
+  endCard: boolean;
   title?: string;
   outputVideoFilename?: string;
   parentJobId?: string;

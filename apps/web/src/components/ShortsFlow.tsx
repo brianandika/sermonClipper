@@ -43,6 +43,7 @@ interface Moment {
   cropY: number;
   zoom: number;
   captions: boolean;
+  endCard: boolean;
   status: MomentStatus;
   jobId?: string;
   result?: Result;
@@ -372,6 +373,11 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
             Burn in captions
           </label>
 
+          <label className="shorts-toggle">
+            <input type="checkbox" checked={moment.endCard} onChange={(event) => onChange({ endCard: event.target.checked })} />
+            Add church end card
+          </label>
+
           {error && <p className="shorts-error">{error}</p>}
           {moment.status === 'processing' && (
             <div className="shorts-progress">
@@ -567,6 +573,7 @@ export default function ShortsFlow({
       cropY: p.cropY ?? 0.5,
       zoom: p.zoom ?? 1,
       captions: p.captions !== false,
+      endCard: p.endCard !== false,
       status: 'processing',
       jobId: job.jobId,
       message: job.progress?.message ?? 'Processing…',
@@ -664,6 +671,7 @@ export default function ShortsFlow({
         cropY: p.cropY ?? 0.5,
         zoom: p.zoom ?? 1,
         captions: p.captions !== false,
+        endCard: p.endCard !== false,
         status: 'idle',
       },
     ]);
@@ -739,6 +747,7 @@ export default function ShortsFlow({
         cropY: 0.5,
         zoom: 1,
         captions: true,
+        endCard: true,
         status: 'idle',
       },
     ]);
@@ -771,6 +780,7 @@ export default function ShortsFlow({
         cropY: moment.cropY,
         zoom: moment.zoom,
         captions: moment.captions,
+        endCard: moment.endCard,
         title: moment.title,
         outputVideoFilename: `${slugify(moment.title)}.mp4`,
         parentJobId: parentJobId ?? undefined,
