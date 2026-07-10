@@ -47,6 +47,9 @@ interface Moment {
   jobId?: string;
   result?: Result;
   message?: string;
+  // 0..100 overall progress while status === 'processing' (from the job's
+  // progress row). Undefined until the worker reports the first update.
+  progress?: number;
 }
 
 // A full-height 9:16 window spans (9/16) / (16/9) = 81/256 of a 16:9 frame's
@@ -54,6 +57,9 @@ interface Moment {
 const WINDOW_FRACTION = 81 / 256;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 2.5;
+// YouTube Shorts / IG Reels cap a clip at 3 minutes. Mirrors
+// MAX_SHORT_DURATION_SEC in @sermon-clipper/shared (the API enforces the same).
+const MAX_SHORT_DURATION_SEC = 180;
 const TERMINAL_STATUSES = ['completed', 'failed', 'canceled', 'expired'];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -140,6 +146,8 @@ function momentError(moment: Moment, duration: number): string | null {
   if (moment.start < 0) return 'Start must be ≥ 0';
   if (moment.end <= moment.start) return 'End must be after start';
   if (duration > 0 && moment.end > duration + 0.001) return 'End is beyond the video length';
+  if (moment.end - moment.start > MAX_SHORT_DURATION_SEC + 0.001)
+    return `A short can be at most ${MAX_SHORT_DURATION_SEC / 60} minutes long`;
   return null;
 }
 
@@ -365,7 +373,30 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
           </label>
 
           {error && <p className="shorts-error">{error}</p>}
-          {moment.status === 'processing' && <p className="results-pending-copy">{moment.message || 'Processing…'}</p>}
+          {moment.status === 'processing' && (
+            <div className="shorts-progress">
+              <div
+                className="progress-bar"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={typeof moment.progress === 'number' ? Math.round(moment.progress) : undefined}
+              >
+                {typeof moment.progress === 'number' && moment.progress > 0 ? (
+                  <div className="progress" style={{ width: `${Math.max(4, Math.min(100, moment.progress))}%` }} />
+                ) : (
+                  // No numeric progress yet (queued / just started): indeterminate sweep.
+                  <div className="progress" style={{ width: '100%' }}>
+                    <div className="loading-animation" />
+                  </div>
+                )}
+              </div>
+              <p className="results-pending-copy">
+                {moment.message || 'Processing…'}
+                {typeof moment.progress === 'number' && moment.progress > 0 ? ` (${Math.round(moment.progress)}%)` : ''}
+              </p>
+            </div>
+          )}
           {moment.status === 'failed' && moment.message && !error && <p className="shorts-error">{moment.message}</p>}
 
           {moment.status === 'completed' && moment.result?.videoPath && (
@@ -434,6 +465,9 @@ export default function ShortsFlow({
   // they survive tab switches / reloads). The `moments` above are only the
   // in-progress shorts being framed; on export they graduate into savedShorts.
   const [savedShorts, setSavedShorts] = useState<Job[]>([]);
+  // Job ids we're already polling, so a re-mount / hydrate never double-polls
+  // the same short (React strict mode invokes effects twice in dev).
+  const pollingRef = useRef<Set<string>>(new Set());
 
   // Transcript editing state
   const [editingTranscript, setEditingTranscript] = useState(false);
@@ -508,8 +542,7 @@ export default function ShortsFlow({
     setEditingTranscript(false);
   }, [source?.assetId]);
 
-  // Load this source's already-exported shorts from the DB so they persist
-  // across tab switches and reloads.
+  // Refresh this source's completed shorts from the DB (the "Saved shorts" list).
   const loadSavedShorts = async (assetId: string): Promise<boolean> => {
     try {
       const jobs = await getShortsForAsset(assetId);
@@ -520,9 +553,98 @@ export default function ShortsFlow({
     }
   };
 
+  // Seed an in-progress editor card from a short job that's still encoding, so a
+  // reload / tab-switch re-shows it (with its progress bar) instead of dropping it.
+  const momentFromJob = (job: Job): Moment => {
+    const p = job.payload;
+    const fallbackName = p.outputVideoFilename ? p.outputVideoFilename.replace(/\.[^.]+$/, '') : '';
+    return {
+      id: nextMomentId(),
+      title: p.title || fallbackName || 'Short',
+      start: p.startTime ?? 0,
+      end: p.endTime ?? 0,
+      cropX: p.cropX ?? 0.5,
+      cropY: p.cropY ?? 0.5,
+      zoom: p.zoom ?? 1,
+      captions: p.captions !== false,
+      status: 'processing',
+      jobId: job.jobId,
+      message: job.progress?.message ?? 'Processing…',
+      progress: job.progress?.videoProgress,
+    };
+  };
+
+  // Poll a short job to completion, streaming its message + overall progress into
+  // the moment card. Shared by a fresh export and by resumed (hydrated) shorts.
+  // The worker runs independently of the browser, so this is only a view onto it —
+  // closing the tab never cancels the encode.
+  const pollShortJob = async (momentId: string, jobId: string, assetId: string) => {
+    if (pollingRef.current.has(jobId)) return;
+    pollingRef.current.add(jobId);
+    try {
+      let finished: Job | null = null;
+      for (let attempt = 0; attempt < 1200; attempt += 1) {
+        const current = await getJob(jobId);
+        const patch: Partial<Moment> = {};
+        if (current.progress?.message) patch.message = current.progress.message;
+        // A short's single ffmpeg encode reports through videoProgress (5→100);
+        // overallProgress stays a flat 15% the whole encode, so it's useless as a bar.
+        if (current.progress) patch.progress = current.progress.videoProgress;
+        if (patch.message !== undefined || patch.progress !== undefined) updateMoment(momentId, patch);
+        if (TERMINAL_STATUSES.includes(current.status)) {
+          finished = current;
+          break;
+        }
+        await sleep(1500);
+      }
+
+      if (!finished || finished.status !== 'completed') {
+        throw new Error(finished?.failureReason || 'Short processing did not complete');
+      }
+
+      const result = await getResult(jobId);
+      // Graduate the finished short into "Saved shorts"; only drop the in-progress
+      // card if the saved list refreshed successfully.
+      const graduated = await loadSavedShorts(assetId);
+      if (graduated) {
+        removeMoment(momentId);
+      } else {
+        updateMoment(momentId, { status: 'completed', result, message: finished.progress?.message ?? 'Short ready' });
+      }
+    } catch (err) {
+      updateMoment(momentId, { status: 'failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      pollingRef.current.delete(jobId);
+    }
+  };
+
+  // On entering the editor (mount, tab switch, reload), load completed shorts and
+  // resume polling any that are still encoding so their progress bars come back.
+  const hydrateShorts = async (assetId: string) => {
+    let jobs: Job[];
+    try {
+      jobs = await getShortsForAsset(assetId);
+    } catch {
+      return;
+    }
+    setSavedShorts(jobs.filter((jb) => jb.status === 'completed' && Boolean(jb.result?.videoPath)));
+
+    const resumable = jobs.filter((jb) => !TERMINAL_STATUSES.includes(jb.status) && !pollingRef.current.has(jb.jobId));
+    if (resumable.length === 0) return;
+    const seeds = resumable.map(momentFromJob);
+    setMoments((prev) => {
+      const known = new Set(prev.map((m) => m.jobId).filter(Boolean));
+      const toAdd = seeds.filter((s) => !known.has(s.jobId));
+      return toAdd.length ? [...prev, ...toAdd] : prev;
+    });
+    seeds.forEach((seed) => {
+      if (seed.jobId) void pollShortJob(seed.id, seed.jobId, assetId);
+    });
+  };
+
   useEffect(() => {
     if (phase !== 'editor' || !source) return;
-    void loadSavedShorts(source.assetId);
+    void hydrateShorts(source.assetId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, source]);
 
@@ -637,8 +759,9 @@ export default function ShortsFlow({
       return;
     }
 
-    updateMoment(id, { status: 'processing', message: 'Queued…', result: undefined });
+    updateMoment(id, { status: 'processing', message: 'Queued…', progress: undefined, result: undefined });
 
+    let jobId: string;
     try {
       const job = await createShortJob({
         assetId: source.assetId,
@@ -652,38 +775,16 @@ export default function ShortsFlow({
         outputVideoFilename: `${slugify(moment.title)}.mp4`,
         parentJobId: parentJobId ?? undefined,
       });
-      updateMoment(id, { jobId: job.jobId });
-
-      let finished: Job | null = null;
-      for (let attempt = 0; attempt < 1200; attempt += 1) {
-        const current = await getJob(job.jobId);
-        if (current.progress?.message) {
-          updateMoment(id, { message: current.progress.message });
-        }
-        if (TERMINAL_STATUSES.includes(current.status)) {
-          finished = current;
-          break;
-        }
-        await sleep(1500);
-      }
-
-      if (!finished || finished.status !== 'completed') {
-        throw new Error(finished?.failureReason || 'Short processing did not complete');
-      }
-
-      const result = await getResult(job.jobId);
-      // Graduate the finished short into the persisted "Saved shorts" list so it
-      // survives tab switches; only drop it from the in-progress editors if the
-      // saved list refreshed successfully.
-      const graduated = await loadSavedShorts(source.assetId);
-      if (graduated) {
-        removeMoment(id);
-      } else {
-        updateMoment(id, { status: 'completed', result, message: finished.progress?.message ?? 'Short ready' });
-      }
+      jobId = job.jobId;
+      updateMoment(id, { jobId });
     } catch (err) {
       updateMoment(id, { status: 'failed', message: err instanceof Error ? err.message : String(err) });
+      return;
     }
+
+    // The encode now lives on the worker; poll it (this same poller resumes the
+    // short after a reload / tab switch).
+    await pollShortJob(id, jobId, source.assetId);
   };
 
   // "Export all" (re)exports every short that isn't already mid-export, so the

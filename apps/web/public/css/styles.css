@@ -910,6 +910,25 @@ video, audio {
   font-size: 0.85rem;
 }
 
+/* In-progress short: a slim progress bar + status line under the framing controls */
+.shorts-progress {
+  margin: 0.4rem 0 0;
+}
+
+.shorts-progress .progress-bar {
+  margin-top: 0;
+  height: 0.5rem;
+}
+
+.shorts-progress .progress {
+  height: 0.5rem;
+  min-width: 0;
+}
+
+.shorts-progress .results-pending-copy {
+  margin: 0.35rem 0 0;
+}
+
 /* Saved (persisted) shorts library inside the editor */
 .shorts-saved {
   width: 100%;
