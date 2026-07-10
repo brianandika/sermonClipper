@@ -4,6 +4,7 @@ import {
     HardwareOption as SharedHardwareOption,
     JobStage,
     JobStatus as SharedJobStatus,
+    MAX_SHORT_DURATION_SEC,
     QUEUE_NAMES,
     type CreateJobRequest,
     type QueueName,
@@ -80,6 +81,12 @@ function validateShortRange(payload: CreateJobDto) {
 
     if (payload.startTime >= payload.endTime) {
         throw new BadRequestException("startTime must be less than endTime");
+    }
+
+    if (payload.endTime - payload.startTime > MAX_SHORT_DURATION_SEC + 0.001) {
+        throw new BadRequestException(
+            `A short can be at most ${MAX_SHORT_DURATION_SEC / 60} minutes long`,
+        );
     }
 }
 

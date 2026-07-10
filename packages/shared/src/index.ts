@@ -1,5 +1,9 @@
 export const SESSION_COOKIE_NAME = "sermon_clipper_session";
 
+// YouTube Shorts (and IG Reels) cap a clip at 3 minutes, so a short's
+// start→end span may not exceed this.
+export const MAX_SHORT_DURATION_SEC = 180;
+
 export const QUEUE_NAMES = {
     clipProcess: "clip-process",
     gpuEncode: "gpu-encode",
