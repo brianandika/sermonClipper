@@ -1919,8 +1919,29 @@ function getQueueConcurrency(queueName: QueueName) {
     return Math.max(1, runtimeEnv.cpuWorkerConcurrency);
 }
 
-async function createQueueWorker(queueName: QueueName, connection: IORedis) {
+function createRedisConnection() {
+    const connection = new IORedis(runtimeEnv.redisUrl, {
+        maxRetriesPerRequest: null,
+        lazyConnect: true,
+    });
+    connection.on("error", () => undefined);
+    return connection;
+}
+
+async function createQueueWorker(queueName: QueueName) {
     const { Worker } = await import("bullmq");
+
+    // Each worker gets its OWN Redis connection. A BullMQ worker holds a blocking
+    // consumer (BZPOPMIN); sharing one connection across queues lets a single
+    // half-closed connection (e.g. after an ungraceful restart) wedge every queue
+    // — jobs then sit in `wait` and never drain.
+    const connection = createRedisConnection();
+    try {
+        await connection.connect();
+    }
+    catch (error) {
+        throw new Error(`Unable to connect to Redis at ${runtimeEnv.redisUrl}: ${String(error)}`);
+    }
 
     const worker = new Worker<ClipProcessJobData>(
         queueName,
@@ -1976,25 +1997,46 @@ async function createQueueWorker(queueName: QueueName, connection: IORedis) {
         process.stderr.write(`Failed job ${failedJob?.id ?? "unknown"} on queue ${queueName}: ${error.message}\n`);
     });
 
-    return worker;
+    return { worker, connection };
 }
 
 async function bootstrap() {
-    const connection = new IORedis(runtimeEnv.redisUrl, {
-        maxRetriesPerRequest: null,
-        lazyConnect: true,
-    });
-    connection.on("error", () => undefined);
-
-    try {
-        await connection.connect();
-    }
-    catch (error) {
-        throw new Error(`Unable to connect to Redis at ${runtimeEnv.redisUrl}: ${String(error)}`);
-    }
-
     const queueNames = getEnabledQueues();
-    await Promise.all(queueNames.map((queueName) => createQueueWorker(queueName, connection)));
+    const created = await Promise.all(queueNames.map((queueName) => createQueueWorker(queueName)));
+
+    // Graceful shutdown. On any restart — ts-node-dev respawn (a watched file
+    // changed), Docker/orchestrator SIGTERM on redeploy, or Ctrl-C — close each
+    // worker so its blocking Redis consumer is torn down cleanly. Without this the
+    // process was killed abruptly, and a respawned worker could come up wedged and
+    // never pull queued jobs (they piled up in `wait`). A hard timeout keeps a
+    // long in-flight encode from blocking the restart forever.
+    let shuttingDown = false;
+    const shutdown = async (signal: string) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        process.stdout.write(`Received ${signal}, closing workers…\n`);
+
+        const forceExit = setTimeout(() => {
+            process.stderr.write("Shutdown timed out; forcing exit.\n");
+            process.exit(0);
+        }, 10_000);
+        forceExit.unref();
+
+        try {
+            await Promise.all(created.map(({ worker }) => worker.close()));
+            await Promise.all(created.map(({ connection }) => connection.quit().catch(() => undefined)));
+        }
+        catch (error) {
+            process.stderr.write(`Error during shutdown: ${String(error)}\n`);
+        }
+        finally {
+            clearTimeout(forceExit);
+        }
+        process.exit(0);
+    };
+
+    process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 bootstrap().catch((error) => {
