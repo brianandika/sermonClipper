@@ -2,18 +2,29 @@ import { Type } from "class-transformer";
 import {
     ArrayMinSize,
     IsArray,
+    IsBoolean,
     IsEnum,
+    IsIn,
     IsNotEmpty,
     IsNumber,
     IsOptional,
     IsString,
+    Max,
+    Min,
     ValidateIf,
 } from "class-validator";
-import { HardwareOption } from "@sermon-clipper/shared";
+import { HardwareOption, type JobKind } from "@sermon-clipper/shared";
+
+const JOB_KINDS: JobKind[] = ["sermon", "transcribeSource", "short"];
 
 export class CreateJobDto {
     @IsString()
     assetId!: string;
+
+    // Absent ⇒ "sermon" (the original landscape flow).
+    @IsOptional()
+    @IsIn(JOB_KINDS)
+    kind?: JobKind;
 
     @IsOptional()
     @IsString()
@@ -34,13 +45,61 @@ export class CreateJobDto {
     @IsNumber()
     introDuration?: number;
 
+    // transcribeSource has no clip range; sermon/short both require start/end.
+    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource")
     @Type(() => Number)
     @IsNumber()
     startTime!: number;
 
+    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource")
     @Type(() => Number)
     @IsNumber()
     endTime!: number;
+
+    // "short" only: 9:16 window horizontal position (0..1) and zoom (>=1).
+    @ValidateIf((o: CreateJobDto) => o.kind === "short")
+    @Type(() => Number)
+    @IsNumber()
+    @Min(0)
+    @Max(1)
+    cropX?: number;
+
+    // "short" only: 9:16 window vertical position (0..1). Optional for backward
+    // compatibility — a missing value is treated as 0.5 (centered).
+    @IsOptional()
+    @ValidateIf((o: CreateJobDto) => o.kind === "short" && o.cropY !== undefined)
+    @Type(() => Number)
+    @IsNumber()
+    @Min(0)
+    @Max(1)
+    cropY?: number;
+
+    // Below 1 = zoom out (letterboxed); above 1 = zoom in (tighter crop).
+    @ValidateIf((o: CreateJobDto) => o.kind === "short")
+    @Type(() => Number)
+    @IsNumber()
+    @Min(0.3)
+    @Max(2.5)
+    zoom?: number;
+
+    @IsOptional()
+    @IsBoolean()
+    captions?: boolean;
+
+    // "short" only: append the branded church end card (default true).
+    @IsOptional()
+    @IsBoolean()
+    endCard?: boolean;
+
+    @IsOptional()
+    @IsString()
+    title?: string;
+
+    // "short" only: the sermon/transcribe job this short groups under in the
+    // queue. Metadata only — the worker ignores it.
+    @IsOptional()
+    @IsString()
+    parentJobId?: string;
 
     @IsOptional()
     @IsArray()

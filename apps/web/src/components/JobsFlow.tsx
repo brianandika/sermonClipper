@@ -6,8 +6,13 @@ interface JobsFlowProps {
   currentSessionId: string | null;
   activeJobId: string | null;
   onOpenResult: (job: Job, result: Result) => void;
+  onOpenShorts: (job: Job) => void;
+  onViewTranscribeResult: (job: Job) => void | Promise<void>;
+  shortsBusy: boolean;
   onReset: () => void;
 }
+
+const jobKind = (job: Job): string => job.payload?.kind ?? 'sermon';
 
 const ACTIVE_STATUSES = new Set([
   'queued',
@@ -53,7 +58,7 @@ function MiniBar({ label, value, color }: { label: string; value: number; color:
   );
 }
 
-export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onReset }: JobsFlowProps) {
+export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onOpenShorts, onViewTranscribeResult, shortsBusy, onReset }: JobsFlowProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +103,34 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
     [jobs],
   );
 
+  // Group short jobs under their originating sermon/transcribe job so exported
+  // shorts don't flood the queue. Shorts whose parent isn't in the current list
+  // (e.g. another session's) fall back to their own top-level rows.
+  const { topLevelJobs, childrenByParent, shortsCount } = useMemo(() => {
+    const parents = jobs.filter((job) => jobKind(job) !== 'short');
+    const parentIds = new Set(parents.map((job) => job.jobId));
+    const byParent = new Map<string, Job[]>();
+    const orphanShorts: Job[] = [];
+    let shorts = 0;
+    for (const job of jobs) {
+      if (jobKind(job) !== 'short') continue;
+      shorts += 1;
+      const parentId = job.payload?.parentJobId;
+      if (parentId && parentIds.has(parentId)) {
+        const bucket = byParent.get(parentId) ?? [];
+        bucket.push(job);
+        byParent.set(parentId, bucket);
+      } else {
+        orphanShorts.push(job);
+      }
+    }
+    return {
+      topLevelJobs: [...parents, ...orphanShorts],
+      childrenByParent: byParent,
+      shortsCount: shorts,
+    };
+  }, [jobs]);
+
   const handleCancel = async (jobId: string) => {
     setActionJobId(jobId);
     try {
@@ -123,6 +156,17 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
     }
   };
 
+  const handleViewTranscribeResult = async (job: Job) => {
+    setActionJobId(job.jobId);
+    try {
+      await onViewTranscribeResult(job);
+    } catch (err) {
+      setError(`Failed to open result: ${String(err)}`);
+    } finally {
+      setActionJobId(null);
+    }
+  };
+
   return (
     <div className="container" style={{ maxWidth: '1400px', width: 'min(1400px, calc(100vw - 2rem))' }}>
       <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', gap: '1rem', flexWrap: 'wrap' }}>
@@ -138,7 +182,8 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
       <div style={{ width: '100%', marginBottom: '1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
         <div style={{ padding: '1rem', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '0.75rem' }}>
           <strong>Total Jobs</strong>
-          <div style={{ fontSize: '1.5rem', marginTop: '0.5rem' }}>{jobs.length}</div>
+          <div style={{ fontSize: '1.5rem', marginTop: '0.5rem' }}>{topLevelJobs.length}</div>
+          {shortsCount > 0 ? <div style={{ fontSize: '0.8rem', color: '#64748b' }}>+ {shortsCount} short{shortsCount === 1 ? '' : 's'}</div> : null}
         </div>
         <div style={{ padding: '1rem', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '0.75rem' }}>
           <strong>Active Jobs</strong>
@@ -163,16 +208,29 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
             </tr>
           </thead>
           <tbody>
-            {jobs.map((job) => {
+            {topLevelJobs.map((job) => {
               const isActiveRow = job.jobId === activeJobId;
               const isOwnedByCurrentSession = currentSessionId !== null && job.sessionId === currentSessionId;
+              const isTranscribe = jobKind(job) === 'transcribeSource';
               const canCancel = isOwnedByCurrentSession && ACTIVE_STATUSES.has(job.status);
-              const canOpenResult = isOwnedByCurrentSession && Boolean(job.result?.audioPath);
+              // Sermon result (audio/video/transcript) — opened via getResult.
+              const canOpenResult = isOwnedByCurrentSession && !isTranscribe && Boolean(job.result?.audioPath);
+              // Transcribe-only job: no Result row, but a "View Result" page built
+              // from the uploaded video + transcript once it completes.
+              const canViewTranscribeResult = isOwnedByCurrentSession && isTranscribe && job.status === 'completed';
+              // "Shorts" for a completed sermon (has a video) or a completed transcribe job.
+              const canShorts = isOwnedByCurrentSession
+                && job.status === 'completed'
+                && ((jobKind(job) === 'sermon' && Boolean(job.result?.videoPath)) || isTranscribe);
               const audioProgress = Math.max(0, Math.min(100, job.progress?.audioProgress ?? 0));
               const videoProgress = Math.max(0, Math.min(100, job.progress?.videoProgress ?? 0));
               const transcriptProgress = Math.max(0, Math.min(100, job.progress?.transcriptProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
               const requestedOutputName = getRequestedOutputName(job);
+              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts;
+
+              const childShorts = childrenByParent.get(job.jobId) ?? [];
+              const shortsDone = childShorts.filter((c) => c.status === 'completed' && Boolean(c.result?.videoPath)).length;
 
               return (
                 <tr key={job.jobId} style={{ background: isActiveRow ? 'rgba(37, 99, 235, 0.06)' : 'transparent' }}>
@@ -195,6 +253,11 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                   </td>
                   <td style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0', verticalAlign: 'top', overflowWrap: 'anywhere' }}>
                     {job.progress?.message ?? job.failureReason ?? (TERMINAL_STATUSES.has(job.status) ? 'No active progress' : 'Queued')}
+                    {childShorts.length > 0 ? (
+                      <div style={{ marginTop: '0.5rem', color: '#0f766e', fontWeight: 600, fontSize: '0.85rem' }}>
+                        Shorts: {shortsDone}/{childShorts.length} done
+                      </div>
+                    ) : null}
                   </td>
                   <td style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0', verticalAlign: 'top', fontSize: '0.875rem' }}>
                     <div>{formatDate(job.createdAt)}</div>
@@ -214,13 +277,23 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                           {rowBusy ? 'Opening...' : (job.result?.videoPath ? 'View Result' : 'Open Audio')}
                         </button>
                       ) : null}
-                      {!canCancel && !canOpenResult ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
+                      {canViewTranscribeResult ? (
+                        <button type="button" className="btn" onClick={() => handleViewTranscribeResult(job)} disabled={rowBusy} style={{ minWidth: '88px' }}>
+                          {rowBusy ? 'Opening...' : 'View Result'}
+                        </button>
+                      ) : null}
+                      {canShorts ? (
+                        <button type="button" className="btn" onClick={() => onOpenShorts(job)} disabled={shortsBusy} style={{ minWidth: '88px', background: '#0f766e' }}>
+                          {shortsBusy ? 'Opening...' : 'Shorts'}
+                        </button>
+                      ) : null}
+                      {noActions ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
                     </div>
                   </td>
                 </tr>
               );
             })}
-            {!loading && jobs.length === 0 ? (
+            {!loading && topLevelJobs.length === 0 ? (
               <tr>
                 <td colSpan={7} style={{ padding: '1rem', textAlign: 'center', color: '#64748b' }}>
                   No jobs submitted yet.

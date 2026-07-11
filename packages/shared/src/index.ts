@@ -1,5 +1,9 @@
 export const SESSION_COOKIE_NAME = "sermon_clipper_session";
 
+// YouTube Shorts (and IG Reels) cap a clip at 3 minutes, so a short's
+// start→end span may not exceed this.
+export const MAX_SHORT_DURATION_SEC = 180;
+
 export const QUEUE_NAMES = {
     clipProcess: "clip-process",
     gpuEncode: "gpu-encode",
@@ -62,6 +66,7 @@ export interface AssetResponse {
     sourcePath: string;
     fps: number | null;
     duration: number | null;
+    transcriptPath: string | null;
     status: string;
     createdAt: string;
     updatedAt: string;
@@ -74,7 +79,24 @@ export interface PeaksResponse {
     sampleRate: number;
 }
 
+export interface TranscriptCue {
+    start: number;
+    end: number;
+    text: string;
+}
+
+// Body for editing an asset's transcript (typo/spelling fixes). The API writes a
+// canonical WebVTT to the asset's transcriptPath in place.
+export interface UpdateTranscriptRequest {
+    cues: TranscriptCue[];
+}
+
+// Discriminates the three worker pipelines. Absent ⇒ "sermon" (the original
+// landscape trim/cut flow), preserving backward compatibility with existing jobs.
+export type JobKind = "sermon" | "transcribeSource" | "short";
+
 export interface CreateJobRequest {
+    kind?: JobKind;
     startTime: number;
     endTime: number;
     clipStarts?: number[];
@@ -86,6 +108,21 @@ export interface CreateJobRequest {
     transitionDuration?: number;
     fps?: number;
     hardware?: HardwareOption;
+    // "short" only: horizontal/vertical crop position (0..1) and zoom (>=1) for
+    // the 9:16 window, whether to burn in captions (default true), and a display
+    // title (persisted so saved shorts show a friendly name). cropY only has an
+    // effect once zoomed in (a zoom=1 window already spans the full height).
+    cropX?: number;
+    cropY?: number;
+    zoom?: number;
+    captions?: boolean;
+    // "short" only: append the church end card (a branded 9:16 image) after the
+    // clip, with a quick crossfade into it and a 3s hold. Default true.
+    endCard?: boolean;
+    title?: string;
+    // "short" only: the sermon or transcribe job this short was cut from. Used
+    // purely to group a source's exported shorts under its row in the job queue.
+    parentJobId?: string;
 }
 
 export interface JobResponse {

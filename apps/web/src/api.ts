@@ -49,6 +49,13 @@ export const getAsset = async (assetId: string): Promise<Asset> => {
   return data;
 };
 
+// Reuse a completed sermon's output MP4 + transcript as a shorts source
+// (referenced in place — no re-transcription). Returns the derived asset.
+export const createShortsSourceFromJob = async (jobId: string): Promise<Asset> => {
+  const { data } = await api.post(`/assets/from-job/${jobId}`);
+  return data;
+};
+
 export const getAssetFps = async (assetId: string): Promise<FpsResponse> => {
   const { data } = await api.get(`/assets/${assetId}/fps`);
   return data;
@@ -61,6 +68,27 @@ export const getAssetPeaks = async (assetId: string): Promise<PeaksResponse> => 
 
 export const getAssetSourceUrl = (assetId: string) => {
   return `${API_BASE}/assets/${assetId}/source`;
+};
+
+export const getAssetTranscriptUrl = (assetId: string) => {
+  return `${API_BASE}/assets/${assetId}/transcript`;
+};
+
+// Fetch the raw WebVTT text of an asset's on-demand transcript (used by the
+// Shorts tab to render clickable cues). 404s until a transcribeSource job runs.
+export const getAssetTranscriptText = async (assetId: string): Promise<string> => {
+  const { data } = await api.get(`/assets/${assetId}/transcript`, { responseType: 'text' });
+  return data as string;
+};
+
+// Overwrite an asset's transcript with edited cues (typo fixes). Writes in place,
+// so a shorts source derived from a sermon also corrects the sermon transcript.
+export const updateAssetTranscript = async (
+  assetId: string,
+  cues: { start: number; end: number; text: string }[],
+): Promise<Asset> => {
+  const { data } = await api.put(`/assets/${assetId}/transcript`, { cues });
+  return data;
 };
 
 // Jobs
@@ -79,6 +107,38 @@ export const createJob = async (jobData: {
   hardware?: HardwareOption;
 }) => {
   const { data } = await api.post('/jobs', jobData);
+  return data;
+};
+
+// Transcribe an uploaded source video on demand (no clip range). Prerequisite
+// for building shorts / picking moments from the transcript.
+export const createTranscribeJob = async (assetId: string): Promise<Job> => {
+  const { data } = await api.post('/jobs', { assetId, kind: 'transcribeSource' });
+  return data;
+};
+
+// Create one 9:16 vertical short from a moment of the source.
+export const createShortJob = async (params: {
+  assetId: string;
+  startTime: number;
+  endTime: number;
+  cropX: number;
+  cropY: number;
+  zoom: number;
+  captions: boolean;
+  endCard: boolean;
+  title?: string;
+  outputVideoFilename?: string;
+  parentJobId?: string;
+}): Promise<Job> => {
+  const { data } = await api.post('/jobs', { kind: 'short', ...params });
+  return data;
+};
+
+// All persisted shorts for a source asset (newest first) — the saved shorts
+// shown in the Shorts editor so they survive tab switches and reloads.
+export const getShortsForAsset = async (assetId: string): Promise<Job[]> => {
+  const { data } = await api.get(`/jobs/shorts/${assetId}`);
   return data;
 };
 

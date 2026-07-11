@@ -51,6 +51,17 @@ export class JobsController {
         return this.jobsService.toResponse(job);
     }
 
+    @Get("shorts/:assetId")
+    async listShortsForAsset(
+        @Req() request: Request,
+        @Param("assetId") assetId: string,
+    ): Promise<JobResponse[]> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        await this.assetsService.getOwnedAsset(session.id, assetId);
+        const jobs = await this.jobsService.listShortsForAsset(session.id, assetId);
+        return jobs.map((job) => this.jobsService.toResponse(job));
+    }
+
     @Get(":jobId")
     async getJob(
         @Req() request: Request,

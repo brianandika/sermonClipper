@@ -4,6 +4,7 @@ import {
     HardwareOption as SharedHardwareOption,
     JobStage,
     JobStatus as SharedJobStatus,
+    MAX_SHORT_DURATION_SEC,
     QUEUE_NAMES,
     type CreateJobRequest,
     type QueueName,
@@ -73,6 +74,22 @@ function validateClipRanges(payload: CreateJobDto) {
     }
 }
 
+function validateShortRange(payload: CreateJobDto) {
+    if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
+        throw new BadRequestException("A short requires numeric startTime and endTime");
+    }
+
+    if (payload.startTime >= payload.endTime) {
+        throw new BadRequestException("startTime must be less than endTime");
+    }
+
+    if (payload.endTime - payload.startTime > MAX_SHORT_DURATION_SEC + 0.001) {
+        throw new BadRequestException(
+            `A short can be at most ${MAX_SHORT_DURATION_SEC / 60} minutes long`,
+        );
+    }
+}
+
 @Injectable()
 export class JobsService {
     constructor(
@@ -82,10 +99,48 @@ export class JobsService {
     ) { }
 
     async create(sessionId: string, assetId: string, payload: CreateJobDto) {
-        validateClipRanges(payload);
+        const kind = payload.kind ?? "sermon";
+
+        // Idempotency: never queue a second transcription for a source that is
+        // already being transcribed. Re-mounting the Shorts tab or double-clicks
+        // return the in-flight job instead of piling up duplicates.
+        if (kind === "transcribeSource") {
+            const activeTranscription = await this.prisma.job.findFirst({
+                where: {
+                    sessionId,
+                    assetId,
+                    status: {
+                        notIn: [
+                            SharedJobStatus.completed,
+                            SharedJobStatus.failed,
+                            SharedJobStatus.canceled,
+                            SharedJobStatus.expired,
+                        ],
+                    },
+                    payloadJson: { path: ["kind"], equals: "transcribeSource" },
+                },
+                include: { progress: true, result: true },
+                orderBy: { createdAt: "desc" },
+            });
+
+            if (activeTranscription) {
+                return activeTranscription;
+            }
+        }
+
+        if (kind === "sermon") {
+            validateClipRanges(payload);
+        }
+        else if (kind === "short") {
+            validateShortRange(payload);
+        }
+        // transcribeSource has no clip range to validate.
 
         const requestedHardware = (payload.hardware ?? HardwareOption.auto) as HardwareOption;
         const resolution = await this.jobHardwareService.resolve(requestedHardware);
+        // Transcription never encodes video, so keep it off the (scarce) GPU
+        // encode queue regardless of the resolved hardware.
+        const queueName = kind === "transcribeSource" ? QUEUE_NAMES.clipProcess : resolution.queueName;
 
         const job = await this.prisma.job.create({
             data: {
@@ -95,7 +150,7 @@ export class JobsService {
                 requestedHardware,
                 effectiveHardware: resolution.effectiveHardware,
                 payloadJson: payload as unknown as Prisma.InputJsonValue,
-                queueName: resolution.queueName,
+                queueName,
                 progress: {
                     create: {
                         stage: JobStage.extractClips,
@@ -112,7 +167,7 @@ export class JobsService {
         });
 
         try {
-            await this.clipProcessQueueService.enqueue(resolution.queueName, { jobId: job.id });
+            await this.clipProcessQueueService.enqueue(queueName, { jobId: job.id });
         }
         catch (error) {
             return this.prisma.job.update({
@@ -182,6 +237,25 @@ export class JobsService {
 
     async listJobs() {
         return this.prisma.job.findMany({
+            include: {
+                progress: true,
+                result: true,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+    }
+
+    // All "short" jobs for a given source asset (session-scoped), newest first —
+    // the persisted "saved shorts" for that source.
+    async listShortsForAsset(sessionId: string, assetId: string) {
+        return this.prisma.job.findMany({
+            where: {
+                sessionId,
+                assetId,
+                payloadJson: { path: ["kind"], equals: "short" },
+            },
             include: {
                 progress: true,
                 result: true,

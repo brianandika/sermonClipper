@@ -1,0 +1,15 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="96" y1="48" x2="416" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="0.5" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#tile)"/>
+  <!-- trim handles -->
+  <rect x="140" y="171" width="30" height="170" rx="15" fill="#ffffff" fill-opacity="0.55"/>
+  <rect x="342" y="171" width="30" height="170" rx="15" fill="#ffffff" fill-opacity="0.55"/>
+  <!-- play triangle -->
+  <path d="M212 178 L318 256 L212 334 Z" fill="#ffffff" stroke="#ffffff" stroke-width="24" stroke-linejoin="round"/>
+</svg>
