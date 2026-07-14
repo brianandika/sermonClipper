@@ -1045,6 +1045,17 @@ video, audio {
   font-size: 0.9rem;
 }
 
+/* AI-suggestion rationale under a seeded short's title. */
+.shorts-ai-note {
+  margin: -0.25rem 0 0.5rem;
+  padding: 0.4rem 0.6rem;
+  max-width: none;
+  border-radius: 0.5rem;
+  background: #f5f3ff;
+  color: #5b21b6;
+  font-style: italic;
+}
+
 .shorts-spinner {
   width: 2.5rem;
   height: 2.5rem;

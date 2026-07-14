@@ -3,11 +3,12 @@ import { SessionsModule } from "../sessions/sessions.module";
 import { AssetsController } from "./assets.controller";
 import { AssetMediaService } from "./asset-media.service";
 import { AssetsService } from "./assets.service";
+import { ShortSuggestionsService } from "./short-suggestions.service";
 
 @Module({
     imports: [SessionsModule],
     controllers: [AssetsController],
-    providers: [AssetsService, AssetMediaService],
+    providers: [AssetsService, AssetMediaService, ShortSuggestionsService],
     exports: [AssetsService],
 })
 export class AssetsModule { }

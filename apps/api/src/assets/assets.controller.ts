@@ -22,11 +22,13 @@ import {
     SESSION_COOKIE_NAME,
     type AssetResponse,
     type PeaksResponse,
+    type SuggestShortsResponse,
 } from "@sermon-clipper/shared";
 import { env } from "../config/env";
 import { SessionService } from "../sessions/session.service";
 import { AssetMediaService } from "./asset-media.service";
 import { AssetsService } from "./assets.service";
+import { ShortSuggestionsService } from "./short-suggestions.service";
 import { UpdateTranscriptDto } from "./update-transcript.dto";
 
 const uploadTempDir = join(env.workRoot, "_upload_tmp");
@@ -47,6 +49,7 @@ export class AssetsController {
     constructor(
         private readonly assetsService: AssetsService,
         private readonly assetMediaService: AssetMediaService,
+        private readonly shortSuggestionsService: ShortSuggestionsService,
         private readonly sessionService: SessionService,
     ) { }
 
@@ -179,6 +182,18 @@ export class AssetsController {
         const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
         const asset = await this.assetsService.updateTranscript(session.id, assetId, body.cues);
         return this.toAssetResponse(asset);
+    }
+
+    // Ask Gemini for the best shorts moments from this source's transcript. The
+    // web Shorts tab turns each suggestion into a pre-framed, editable moment.
+    @Post(":assetId/suggest-shorts")
+    async suggestShorts(
+        @Req() request: Request,
+        @Param("assetId") assetId: string,
+    ): Promise<SuggestShortsResponse> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const suggestions = await this.shortSuggestionsService.suggest(session.id, assetId);
+        return { suggestions };
     }
 
     @Get(":assetId/fps")

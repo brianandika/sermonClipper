@@ -106,6 +106,15 @@ export interface Result {
   createdAt: string;
 }
 
+// One AI-suggested shorts moment from the sermon transcript (heading +
+// rationale + a start/end span in seconds). Mirrors the API's ShortSuggestion.
+export interface ShortSuggestion {
+  start: number;
+  end: number;
+  heading: string;
+  description: string;
+}
+
 export interface UploadResponse {
   assetId: string;
   sessionId: string;
