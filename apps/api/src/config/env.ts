@@ -14,5 +14,7 @@ export const env = {
     // Google Gemini (free tier) powers AI shorts suggestions. Absent ⇒ the
     // "Suggest clips" endpoint returns a clear "not configured" error.
     geminiApiKey: process.env.GEMINI_API_KEY?.trim() || "",
-    geminiModel: process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash",
+    // "…-latest" is an alias that always tracks the current flash model, so the
+    // default can't rot when Google gates an older pinned id to new API keys.
+    geminiModel: process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest",
 };

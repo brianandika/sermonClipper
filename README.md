@@ -145,8 +145,10 @@ transcript to Gemini and gets back suggested clip moments.
   only in your local `.env` (which is git-ignored), never in the repo. Get a free
   key at <https://aistudio.google.com/apikey>. Leave it blank to disable the
   feature; the endpoint then returns a clear "not configured" message.
-- `GEMINI_MODEL`: model to use (default `gemini-2.5-flash` — fast, free-tier
-  friendly, and large enough context to fit a whole sermon transcript).
+- `GEMINI_MODEL`: model to use (default `gemini-flash-latest`, an alias that
+  always tracks the current flash model — fast, free-tier friendly, and large
+  enough context to fit a whole sermon transcript). Pin a specific id (e.g.
+  `gemini-3.5-flash`) only if you need reproducible behavior.
 
 ## Example `.env`
 
@@ -169,7 +171,7 @@ GPU_WORKER_CONCURRENCY=1
 BACKUP_INTERVAL_SECONDS=600
 BACKUP_RETENTION_MINUTES=60
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-flash-latest
 ```
 
 > Note: `GEMINI_API_KEY` is intentionally left blank here. Paste your own key
