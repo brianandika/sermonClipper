@@ -140,6 +140,9 @@ export interface CreateJobRequest {
     // "short" only: the sermon or transcribe job this short was cut from. Used
     // purely to group a source's exported shorts under its row in the job queue.
     parentJobId?: string;
+    // "sermon" only: when true (the default), the worker delivers the finished VTT
+    // transcript to the configured SermonGuide inbox. Users can opt out per job.
+    deliverTranscript?: boolean;
 }
 
 export interface JobResponse {

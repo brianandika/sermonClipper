@@ -114,6 +114,7 @@ export const createJob = async (jobData: {
   transitionDuration?: number;
   fps?: number;
   hardware?: HardwareOption;
+  deliverTranscript?: boolean;
 }) => {
   const { data } = await api.post('/jobs', jobData);
   return data;

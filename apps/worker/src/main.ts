@@ -69,6 +69,10 @@ const runtimeEnv = {
     whisperLanguage: process.env.WHISPER_LANGUAGE ?? "en",
     whisperScript: process.env.WHISPER_SCRIPT?.trim() || "",
     shortsEndCardPath: process.env.SHORTS_ENDCARD_PATH?.trim() || "",
+    // SermonGuide transcript delivery. When sermonGuideUrl is set, finished sermon
+    // transcripts are POSTed to <url>/api/inbox with the shared passcode. Empty ⇒ off.
+    sermonGuideUrl: (process.env.SERMONGUIDE_URL ?? "").trim().replace(/\/+$/, ""),
+    sermonGuidePasscode: process.env.SERMONGUIDE_PASSCODE ?? "",
 };
 const defaultIntroDurationSeconds = 5;
 const defaultFadeDurationSeconds = 1;
@@ -1128,6 +1132,81 @@ async function transcribeAudio(
     }
 }
 
+// Deliver a finished sermon transcript to the SermonGuide inbox so a guide can be
+// published from any device. Best-effort: any failure is logged and swallowed so
+// it never fails the clip job (the transcript is still saved locally either way).
+// Build the inbox endpoint URL, but only for https (or http on localhost, for dev). Returns null
+// for any other scheme/host so we never send the passcode + transcript over plaintext or off-box.
+function sermonGuideInboxEndpoint(baseUrl: string): string | null {
+    let url: URL;
+    try {
+        url = new URL(`${baseUrl}/api/inbox`);
+    } catch {
+        return null;
+    }
+    const isLocalhost = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+    if (url.protocol === "https:" || (url.protocol === "http:" && isLocalhost)) {
+        return url.href;
+    }
+    return null;
+}
+
+async function deliverTranscriptToSermonGuide(
+    job: { id: string; asset: { originalFilename: string | null; createdAt: Date } | null },
+    request: CreateJobRequest,
+    transcriptPath: string,
+): Promise<void> {
+    if (request.deliverTranscript === false) return; // user opted out for this job
+    if (!runtimeEnv.sermonGuideUrl) return; // delivery not configured
+
+    // Refuse to send the passcode + transcript anywhere but https (or localhost for dev).
+    // Guards against an operator misconfiguring SERMONGUIDE_URL to http/an unintended host.
+    const endpoint = sermonGuideInboxEndpoint(runtimeEnv.sermonGuideUrl);
+    if (!endpoint) {
+        process.stderr.write(
+            `[deliver] SERMONGUIDE_URL must be https (or http://localhost); skipping delivery for job ${job.id}\n`,
+        );
+        return;
+    }
+
+    const stripExt = (name?: string | null) => name?.replace(/\.[^.]+$/, "").trim() || "";
+    // Strip control chars and cap length so a crafted output filename can't produce a huge or
+    // malformed title downstream. The JSON body is already escaped by JSON.stringify.
+    const cleanTitle = (raw: string) =>
+        raw.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+
+    try {
+        const vtt = await readFile(transcriptPath, "utf8");
+        const title =
+            cleanTitle(
+                stripExt(request.outputVideoFilename) || stripExt(job.asset?.originalFilename),
+            ) || "Untitled sermon";
+        const date = (job.asset?.createdAt ?? new Date()).toISOString().slice(0, 10);
+
+        // Bound the request so a slow/unreachable SermonGuide can't hold a worker slot for long.
+        const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "x-app-passcode": runtimeEnv.sermonGuidePasscode,
+            },
+            body: JSON.stringify({ vtt, title, date, source: "sermonClipper", sourceJobId: job.id }),
+            signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) {
+            const detail = (await response.text().catch(() => "")).slice(0, 300);
+            process.stderr.write(
+                `[deliver] SermonGuide rejected transcript for job ${job.id}: ${response.status} ${detail}\n`,
+            );
+            return;
+        }
+        process.stdout.write(`[deliver] transcript for job ${job.id} sent to SermonGuide\n`);
+    } catch (error) {
+        process.stderr.write(`[deliver] transcript delivery failed for job ${job.id}: ${String(error)}\n`);
+    }
+}
+
 async function processClipJob(payload: ClipProcessJobData) {
     await assertJobNotCanceled(payload.jobId);
     startJobCancellationWatcher(payload.jobId);
@@ -1560,6 +1639,8 @@ async function processClipJob(payload: ClipProcessJobData) {
         // Runs after the video is published; a failure never fails the job.
         const outputTranscriptPath = join(jobRoot, `${outputAudioFilename.replace(/\.mp3$/i, "")}.vtt`);
 
+        let finishedTranscriptPath: string | null = null;
+
         if (runtimeEnv.transcriptionEnabled) {
             await enqueueProgressWrite(job.id, {
                 stage: JobStage.transcribe,
@@ -1603,6 +1684,8 @@ async function processClipJob(payload: ClipProcessJobData) {
                     transcriptProgress: 100,
                     message: "Transcript ready",
                 });
+
+                finishedTranscriptPath = transcriptPath;
             }
         }
 
@@ -1615,6 +1698,12 @@ async function processClipJob(payload: ClipProcessJobData) {
             overallProgress: 100,
             message: "Clip processing complete",
         });
+
+        // Best-effort transcript delivery runs AFTER the job is marked complete, so a slow
+        // SermonGuide never holds the job at 99% or blocks the completion write.
+        if (finishedTranscriptPath) {
+            await deliverTranscriptToSermonGuide(job, request, finishedTranscriptPath);
+        }
     }
     finally {
         stopJobCancellationWatcher(payload.jobId);
