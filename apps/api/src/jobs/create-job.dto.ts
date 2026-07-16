@@ -126,4 +126,10 @@ export class CreateJobDto {
     @IsOptional()
     @IsEnum(HardwareOption)
     hardware?: HardwareOption;
+
+    // "sermon" only: deliver the finished transcript to SermonGuide. Defaults to
+    // true in the worker when omitted; the UI sends false to opt out.
+    @IsOptional()
+    @IsBoolean()
+    deliverTranscript?: boolean;
 }
