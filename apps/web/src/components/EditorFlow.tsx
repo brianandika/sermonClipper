@@ -145,6 +145,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const [coverImageAssetId, setCoverImageAssetId] = useState<string | null>(null);
   const [coverImageUploading, setCoverImageUploading] = useState(false);
   const [outputBaseFilename, setOutputBaseFilename] = useState(() => getBaseFilename(asset.originalFilename));
+  const [deliverTranscript, setDeliverTranscript] = useState(true);
   const [playbackSpeedIndex, setPlaybackSpeedIndex] = useState(DEFAULT_PLAYBACK_INDEX);
   const [submittingJob, setSubmittingJob] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -556,6 +557,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         transitionDuration: 1,
         fps,
         hardware,
+        deliverTranscript,
       });
 
       onSuccess(job);
@@ -784,6 +786,26 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
             Detected: {hardwareLoading ? 'detecting...' : detectedHardware}
           </span>
         </div>
+      </div>
+
+      <div style={{ width: '100%', marginTop: '1rem' }}>
+        <label
+          htmlFor="deliver_transcript"
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
+        >
+          <input
+            id="deliver_transcript"
+            type="checkbox"
+            checked={deliverTranscript}
+            onChange={(e) => setDeliverTranscript(e.target.checked)}
+            style={{ width: 'auto', margin: 0 }}
+          />
+          Send transcript to SermonGuide when done
+        </label>
+        <small style={{ color: '#64748b' }}>
+          Delivers the finished transcript to the SermonGuide inbox so a guide can be published from
+          any device. Uncheck to keep this sermon local.
+        </small>
       </div>
 
       {validationErrors.length > 0 ? (
