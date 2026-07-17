@@ -136,6 +136,20 @@ Copy [/.env.example](/workspaces/sermonClipper/.env.example) to `/.env` before r
 - `WHISPER_LANGUAGE`: language code (default `en`), or `auto` to detect.
 - `PYTHON_PATH`: Python executable used for the transcription script (default `python3`).
 
+### AI Shorts Suggestions (Google Gemini)
+
+Powers the "✨ Suggest clips" button in the Shorts tab, which sends a source's
+transcript to Gemini and gets back suggested clip moments.
+
+- `GEMINI_API_KEY`: your Google Gemini API key. **Keep this secret** — it lives
+  only in your local `.env` (which is git-ignored), never in the repo. Get a free
+  key at <https://aistudio.google.com/apikey>. Leave it blank to disable the
+  feature; the endpoint then returns a clear "not configured" message.
+- `GEMINI_MODEL`: model to use (default `gemini-flash-latest`, an alias that
+  always tracks the current flash model — fast, free-tier friendly, and large
+  enough context to fit a whole sermon transcript). Pin a specific id (e.g.
+  `gemini-3.5-flash`) only if you need reproducible behavior.
+
 ## Example `.env`
 
 ```env
@@ -156,7 +170,12 @@ CPU_WORKER_CONCURRENCY=2
 GPU_WORKER_CONCURRENCY=1
 BACKUP_INTERVAL_SECONDS=600
 BACKUP_RETENTION_MINUTES=60
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-flash-latest
 ```
+
+> Note: `GEMINI_API_KEY` is intentionally left blank here. Paste your own key
+> into your local `.env` only — never commit it. `.env` is git-ignored.
 
 ## Local Development
 
@@ -171,6 +190,11 @@ npm install
 ```sh
 cp .env.example .env
 ```
+
+   Then open `.env` and, if you want AI shorts suggestions, paste your Gemini
+   key into the `GEMINI_API_KEY=` line (get one free at
+   <https://aistudio.google.com/apikey>). This file is git-ignored, so your key
+   never leaves your machine.
 
 3. Start PostgreSQL and Redis:
 

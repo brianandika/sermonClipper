@@ -91,6 +91,23 @@ export interface UpdateTranscriptRequest {
     cues: TranscriptCue[];
 }
 
+// One AI-suggested shorts moment: a self-contained span of the source worth
+// clipping, with a punchy heading and a short "why it's shareable" rationale.
+// start/end are seconds into the source and always satisfy
+// 0 <= start < end and (end - start) <= MAX_SHORT_DURATION_SEC.
+export interface ShortSuggestion {
+    start: number;
+    end: number;
+    heading: string;
+    description: string;
+}
+
+// Response of POST /assets/:assetId/suggest-shorts — the model's picks, ordered
+// best-first. Empty when the transcript yields nothing clip-worthy.
+export interface SuggestShortsResponse {
+    suggestions: ShortSuggestion[];
+}
+
 // Discriminates the three worker pipelines. Absent ⇒ "sermon" (the original
 // landscape trim/cut flow), preserving backward compatibility with existing jobs.
 export type JobKind = "sermon" | "transcribeSource" | "short";

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { Asset, Job, Result } from '../types';
+import { Asset, Job, Result, ShortSuggestion } from '../types';
 import {
   createShortJob,
   createTranscribeJob,
@@ -10,6 +10,7 @@ import {
   getResult,
   getResultArtifact,
   getShortsForAsset,
+  suggestShorts,
   updateAssetTranscript,
 } from '../api';
 
@@ -48,6 +49,9 @@ interface Moment {
   jobId?: string;
   result?: Result;
   message?: string;
+  // When this moment was seeded from an AI suggestion, the model's short
+  // rationale for why it makes a good short. Shown as a hint under the title.
+  note?: string;
   // 0..100 overall progress while status === 'processing' (from the job's
   // progress row). Undefined until the worker reports the first update.
   progress?: number;
@@ -108,6 +112,17 @@ function formatTimecode(seconds: number): string {
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+// Pull the human-readable message out of an axios error's response body (NestJS
+// exceptions serialize to { statusCode, message, ... }). Returns null when the
+// shape doesn't match, so callers can fall back to the raw error.
+function axiosErrorMessage(err: unknown): string | null {
+  const data = (err as { response?: { data?: { message?: unknown } } })?.response?.data;
+  const message = data?.message;
+  if (typeof message === 'string') return message;
+  if (Array.isArray(message) && message.length > 0) return String(message[0]);
+  return null;
 }
 
 function slugify(value: string): string {
@@ -288,6 +303,8 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
         />
         <button type="button" className="btn remove-clip" onClick={onRemove}>Remove</button>
       </div>
+
+      {moment.note && <p className="shorts-hint shorts-ai-note">✨ {moment.note}</p>}
 
       <div className="shorts-editor-body">
         <section className="shorts-preview-col">
@@ -480,6 +497,11 @@ export default function ShortsFlow({
   const [draftCues, setDraftCues] = useState<Cue[]>([]);
   const [savingTranscript, setSavingTranscript] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
+
+  // AI shorts-suggestion state (Gemini). suggesting gates the button; the error
+  // surfaces "not configured" / API failures inline above the toolbar.
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
 
   const phase: 'needsTranscript' | 'editor' = source.transcriptPath ? 'editor' : 'needsTranscript';
 
@@ -757,6 +779,41 @@ export default function ShortsFlow({
     setMoments((prev) => prev.filter((moment) => moment.id !== id));
   };
 
+  // Ask Gemini for the best moments and seed one editable, pre-framed short per
+  // suggestion (title = heading, rationale kept as a note). The user then tweaks
+  // framing/timing and exports like any hand-made short.
+  const runSuggest = async () => {
+    if (!source || suggesting) return;
+    setSuggesting(true);
+    setSuggestError(null);
+    try {
+      const suggestions = await suggestShorts(source.assetId);
+      if (suggestions.length === 0) {
+        setSuggestError('The AI didn’t find any clip-worthy moments in this transcript.');
+        return;
+      }
+      const seeds: Moment[] = suggestions.map((s: ShortSuggestion, i) => ({
+        id: nextMomentId(),
+        title: s.heading || `Suggested short ${i + 1}`,
+        start: Number(clampToSource(s.start).toFixed(3)),
+        end: Number(clampToSource(s.end).toFixed(3)),
+        cropX: 0.5,
+        cropY: 0.5,
+        zoom: 1,
+        captions: true,
+        endCard: true,
+        status: 'idle',
+        note: s.description || undefined,
+      }));
+      setMoments((prev) => [...prev, ...seeds]);
+    } catch (err) {
+      const message = axiosErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
+      setSuggestError(message);
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
   const exportMoment = async (id: string) => {
     if (!source) return;
     const moment = moments.find((item) => item.id === id);
@@ -936,6 +993,15 @@ export default function ShortsFlow({
 
       <div className="shorts-editor-toolbar">
         <button type="button" className="btn add-clip" onClick={addBlankMoment}>Add another short</button>
+        <button
+          type="button"
+          className="btn"
+          onClick={runSuggest}
+          disabled={suggesting || cues.length === 0}
+          title={cues.length === 0 ? 'No transcript to analyze yet' : 'Let AI suggest the best moments to clip'}
+        >
+          {suggesting ? 'Finding moments…' : '✨ Suggest clips'}
+        </button>
         {moments.length > 0 && (
           <button type="button" className="btn" onClick={exportAll} disabled={exportAllCount === 0}>
             Export all shorts ({exportAllCount})
@@ -943,6 +1009,8 @@ export default function ShortsFlow({
         )}
         <span className="shorts-editor-count">{moments.length} short{moments.length === 1 ? '' : 's'}</span>
       </div>
+
+      {suggestError && <p className="shorts-error">{suggestError}</p>}
 
       {moments.length === 0 ? (
         <p className="shorts-hint">

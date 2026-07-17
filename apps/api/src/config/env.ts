@@ -11,4 +11,10 @@ export const env = {
     ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
     ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
     uploadMaxBytes: Number.parseInt(process.env.UPLOAD_MAX_BYTES ?? "53687091200", 10),
+    // Google Gemini (free tier) powers AI shorts suggestions. Absent ⇒ the
+    // "Suggest clips" endpoint returns a clear "not configured" error.
+    geminiApiKey: process.env.GEMINI_API_KEY?.trim() || "",
+    // "…-latest" is an alias that always tracks the current flash model, so the
+    // default can't rot when Google gates an older pinned id to new API keys.
+    geminiModel: process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest",
 };

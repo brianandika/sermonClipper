@@ -8,6 +8,7 @@ import {
   PeaksResponse,
   HardwareCapabilitiesResponse,
   HardwareOption,
+  ShortSuggestion,
 } from './types';
 
 const API_BASE = '/api';
@@ -79,6 +80,14 @@ export const getAssetTranscriptUrl = (assetId: string) => {
 export const getAssetTranscriptText = async (assetId: string): Promise<string> => {
   const { data } = await api.get(`/assets/${assetId}/transcript`, { responseType: 'text' });
   return data as string;
+};
+
+// Ask the API (Gemini) for the best shorts moments from this source's
+// transcript. Returns picks ordered best-first; the Shorts tab turns each into
+// a pre-framed, editable moment. Throws if AI suggestions aren't configured.
+export const suggestShorts = async (assetId: string): Promise<ShortSuggestion[]> => {
+  const { data } = await api.post(`/assets/${assetId}/suggest-shorts`);
+  return (data?.suggestions ?? []) as ShortSuggestion[];
 };
 
 // Overwrite an asset's transcript with edited cues (typo fixes). Writes in place,
