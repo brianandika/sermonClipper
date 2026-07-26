@@ -153,6 +153,15 @@ export class AssetsService {
             return existing;
         }
 
+        // Safe to inherit only because the worker cuts the sermon transcript
+        // from the result MP4 — the exact file this asset points at — rather
+        // than the MP3. The two are not interchangeable: the intro image is
+        // unshifted onto the video segment list only, and the programs use
+        // different crossfade lengths, so an MP3-cut transcript sits ~intro
+        // early and drifts at every segment boundary. The shorts editor
+        // compares cue times straight against this video's currentTime, so if
+        // that ever moves back to the MP3, this must become null and let the
+        // asset take the "needs transcript" path instead.
         const transcriptPath = job.result?.transcriptPath?.trim() || null;
         let fileSize = BigInt(0);
         try {

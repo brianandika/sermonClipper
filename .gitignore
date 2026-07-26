@@ -15,3 +15,5 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+# Local .env backups (e.g. .env.bak-1712345678) — these hold real secrets.
+.env.bak*
