@@ -50,6 +50,11 @@ interface FfprobeMediaResponse {
     }>;
 }
 
+// The SermonGuide studio transcripts are delivered to when SERMONGUIDE_URL is
+// unset. Only the origin belongs here — deliverTranscriptToSermonGuide appends
+// "/api/inbox". Declared before runtimeEnv because its initializer reads it.
+const defaultSermonGuideUrl = "https://sermonguide-delta.vercel.app";
+
 const runtimeEnv = {
     workerMode: (process.env.WORKER_MODE ?? "all").trim(),
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
@@ -69,9 +74,13 @@ const runtimeEnv = {
     whisperLanguage: process.env.WHISPER_LANGUAGE ?? "en",
     whisperScript: process.env.WHISPER_SCRIPT?.trim() || "",
     shortsEndCardPath: process.env.SHORTS_ENDCARD_PATH?.trim() || "",
-    // SermonGuide transcript delivery. When sermonGuideUrl is set, finished sermon
-    // transcripts are POSTed to <url>/api/inbox with the shared passcode. Empty ⇒ off.
-    sermonGuideUrl: (process.env.SERMONGUIDE_URL ?? "").trim().replace(/\/+$/, ""),
+    // SermonGuide transcript delivery. Finished sermon transcripts are POSTed to
+    // <url>/api/inbox with the shared passcode. Defaults to the HMCC studio so
+    // delivery works with no env set; SERMONGUIDE_URL overrides it, and setting
+    // that variable to an empty string still turns delivery off entirely.
+    // The passcode is deliberately NOT defaulted — it is a secret and this repo
+    // is public, so SERMONGUIDE_PASSCODE must be supplied via the environment.
+    sermonGuideUrl: (process.env.SERMONGUIDE_URL ?? defaultSermonGuideUrl).trim().replace(/\/+$/, ""),
     sermonGuidePasscode: process.env.SERMONGUIDE_PASSCODE ?? "",
 };
 const defaultIntroDurationSeconds = 5;
@@ -734,7 +743,19 @@ async function extractAudio(jobId: string, videoPath: string, audioPath: string)
 }
 
 // Extract a 16 kHz mono PCM WAV — the format faster-whisper decodes most
-// reliably — for the standalone transcribeSource pipeline.
+// reliably. Used by both transcription paths: the sermon pipeline (against its
+// finished MP4) and the standalone transcribeSource pipeline (against an
+// uploaded source).
+//
+// WAV carries no timestamps, so a source whose audio stream starts late (e.g. a
+// still "cover image" held for a few seconds before the service audio begins)
+// would otherwise be written from its first audio packet, silently dropping the
+// offset. Every cue in the resulting .vtt would then be early by that amount,
+// and since the shorts editor compares cue times straight against the source's
+// currentTime — and buildAssFromVtt rebases those same cues — the transcript,
+// the editor playhead, and the burned-in captions all drift together.
+// `aresample=async=1:first_pts=0` pads the head with real silence so the WAV's
+// t=0 is the container's t=0, and fills any mid-stream gaps the same way.
 async function extractAudioForTranscription(jobId: string, videoPath: string, audioPath: string) {
     await runFfmpeg(jobId, [
         "-hide_banner",
@@ -742,6 +763,8 @@ async function extractAudioForTranscription(jobId: string, videoPath: string, au
         "-i",
         videoPath,
         "-vn",
+        "-af",
+        "aresample=async=1:first_pts=0",
         "-ac",
         "1",
         "-ar",
@@ -1650,12 +1673,30 @@ async function processClipJob(payload: ClipProcessJobData) {
                 message: "Transcribing sermon audio",
             });
 
-            const transcriptPath = await transcribeAudio(
-                job.id,
-                outputAudioPath,
-                outputTranscriptPath,
-                createBandReporter(job.id, "transcriptProgress", 0, 100),
-            );
+            // Transcribe the finished MP4, not the MP3. The intro image is only
+            // unshifted onto the video segment list, and the two programs use
+            // different crossfade lengths, so an MP3-cut transcript is early by
+            // the intro and drifts at every segment boundary relative to the
+            // video people actually watch. Cutting it from the MP4 makes it
+            // correct against the deliverable and lets a derived shorts source
+            // reuse it as-is instead of transcribing the same sermon twice.
+            // SermonGuide receives only the cue text, so the shift is immaterial
+            // there.
+            const transcriptSourceAudioPath = join(jobRoot, "transcript-source.wav");
+            await extractAudioForTranscription(job.id, outputVideoPath, transcriptSourceAudioPath);
+
+            let transcriptPath: string | null = null;
+            try {
+                transcriptPath = await transcribeAudio(
+                    job.id,
+                    transcriptSourceAudioPath,
+                    outputTranscriptPath,
+                    createBandReporter(job.id, "transcriptProgress", 0, 100),
+                );
+            }
+            finally {
+                await rm(transcriptSourceAudioPath, { force: true });
+            }
 
             await assertJobNotCanceled(job.id);
 
