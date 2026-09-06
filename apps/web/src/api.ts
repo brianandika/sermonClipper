@@ -127,18 +127,20 @@ export const createTranscribeJob = async (assetId: string): Promise<Job> => {
   return data;
 };
 
-// Transcribe only [startTime, endTime] (+ fade padding) of a source — used by
-// the Clip flow so a long recording doesn't need a full-video transcription
-// just to caption a couple of minutes. Idempotency-free (unlike
-// createTranscribeJob): each call always queues a fresh job, since different
-// ranges on the same asset must never dedupe against each other. The result
-// is fetched via getResult(jobId) + getResultTranscriptText(resultId) once
-// the job completes — it is NOT written to the asset's own transcriptPath.
+// Transcribe only [startTime, endTime] of a source — used by the Clip flow so
+// a long recording doesn't need a full-video transcription just to caption a
+// couple of minutes. Deliberately NOT fade-widened: the resulting cues are
+// 0-based relative to startTime, matching the marked selection exactly (no
+// offset to reconcile against the preview player, which always shows the
+// full source). Idempotency-free (unlike createTranscribeJob): each call
+// always queues a fresh job, since different ranges on the same asset must
+// never dedupe against each other. The result is fetched via getResult(jobId)
+// + getResultTranscriptText(resultId) once the job completes — it is NOT
+// written to the asset's own transcriptPath.
 export const createClipTranscribeJob = async (params: {
   assetId: string;
   startTime: number;
   endTime: number;
-  fade: boolean;
 }): Promise<Job> => {
   const { data } = await api.post('/jobs', { kind: 'transcribeSource', ...params });
   return data;
@@ -172,7 +174,10 @@ export const getShortsForAsset = async (assetId: string): Promise<Job[]> => {
 // Create one general-purpose clip (source aspect ratio preserved) with optional
 // fade-to-black at both ends and optional burned-in subtitles. captionsVtt is
 // required when captions is true — the reviewed transcript text from a prior
-// createClipTranscribeJob for this exact [startTime, endTime, fade].
+// createClipTranscribeJob for this exact [startTime, endTime]. fade doesn't
+// need to match what was used (if anything) when the transcript was prepared
+// — the worker re-offsets the cues for whatever fade this export actually
+// requests.
 export const createClipJob = async (params: {
   assetId: string;
   startTime: number;

@@ -115,12 +115,15 @@ export interface ClipTranscriptCue {
   text: string;
 }
 
-// What [start, end, fade] a prepared/in-flight clip transcript covers —
-// compared against the live controls to detect staleness (see ClipFlow).
+// What [start, end] a prepared/in-flight clip transcript covers — compared
+// against the live controls to detect staleness (see ClipFlow). Deliberately
+// excludes `fade`: transcription is never fade-widened (see
+// createClipTranscribeJob), so toggling fade never invalidates a prepared
+// transcript. `cues` are 0-based relative to THIS start (not necessarily the
+// live, possibly-since-edited `draft.start`) — see ClipFlow's cueOffset.
 export interface ClipPreparedFor {
   start: number;
   end: number;
-  fade: boolean;
 }
 
 // All of ClipFlow's per-source state, lifted to App so switching tabs (which

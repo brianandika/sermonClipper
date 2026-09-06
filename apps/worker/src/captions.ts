@@ -245,19 +245,28 @@ export interface AssStyleOptions {
     fontSize: number;
     marginLR: number;
     marginV: number;
+    // Outline (stroke) and drop-shadow thickness, in the same units as
+    // fontSize. Shorts uses a thick, punchy outline on purpose; a landscape
+    // clip wants a much thinner, conventional-subtitle stroke — a thick one
+    // at this font size reads as "bubbly" (letters look blobby, especially at
+    // small point sizes and on curved glyphs).
+    outline: number;
+    shadow: number;
     // Word-wrap width and case behavior for chunkCaptions/normalizeCaptionText.
     maxCharsPerLine: number;
     uppercase: boolean;
 }
 
 // The existing shorts look: 1080x1920, 64pt, bottom third, punchy uppercase
-// captions wrapped tight (right for a narrow vertical frame).
+// captions wrapped tight (right for a narrow vertical frame), thick outline.
 export const SHORT_CAPTION_STYLE: AssStyleOptions = {
     playResX: 1080,
     playResY: 1920,
     fontSize: 64,
     marginLR: 90,
     marginV: 560,
+    outline: 5,
+    shadow: 2,
     maxCharsPerLine: CAPTION_MAX_CHARS_PER_LINE,
     uppercase: true,
 };
@@ -266,14 +275,19 @@ export const SHORT_CAPTION_STYLE: AssStyleOptions = {
 // sized as a fraction of frame height so it reads the same on 720p and 4K,
 // sat just above the bottom edge like conventional burned-in subs, wrapped
 // wider (a landscape frame has much more horizontal room than a 9:16 short),
-// and left in natural case rather than shouted uppercase.
+// left in natural case rather than shouted uppercase, and a thin outline —
+// scaled off THIS style's own fontSize, not shorts' fixed 64pt, so it stays
+// proportionally crisp at any resolution rather than looking bubbly.
 export function landscapeCaptionStyle(width: number, height: number): AssStyleOptions {
+    const fontSize = Math.max(16, Math.round(height * 0.045));
     return {
         playResX: Math.max(2, Math.round(width)),
         playResY: Math.max(2, Math.round(height)),
-        fontSize: Math.max(16, Math.round(height * 0.05)),
+        fontSize,
         marginLR: Math.round(width * 0.06),
         marginV: Math.round(height * 0.06),
+        outline: Math.max(1, Math.round(fontSize * 0.03)),
+        shadow: Math.max(0, Math.round(fontSize * 0.012)),
         maxCharsPerLine: 42,
         uppercase: false,
     };
@@ -292,10 +306,10 @@ function buildAssHeader(style: AssStyleOptions): string {
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        // Bold white text, thick black outline + drop shadow, bottom-centered.
-        // Wide L/R margins keep text off the edges; MarginV sits the block just
+        // Bold white text, black outline + drop shadow, bottom-centered. Wide
+        // L/R margins keep text off the edges; MarginV sits the block just
         // above the bottom edge.
-        `Style: Default,Arial,${style.fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,${style.marginLR},${style.marginLR},${style.marginV},1`,
+        `Style: Default,Arial,${style.fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,${style.outline},${style.shadow},2,${style.marginLR},${style.marginLR},${style.marginV},1`,
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",

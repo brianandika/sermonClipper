@@ -105,7 +105,7 @@ function describeError(err: unknown): string {
 
 function samePreparedFor(a: PreparedFor | null, b: PreparedFor | null): boolean {
   if (!a || !b) return a === b;
-  return a.start === b.start && a.end === b.end && a.fade === b.fade;
+  return a.start === b.start && a.end === b.end;
 }
 
 function slugify(value: string): string {
@@ -150,14 +150,23 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
   const [exportError, setExportError] = useState<string | null>(null);
   const [savedClips, setSavedClips] = useState<Job[]>([]);
 
-  // A prepared transcript is stale once the range or fade it was prepared for
-  // no longer matches the current controls — the effective (fade-widened)
-  // window it covers has shifted, so the burned-in captions would desync.
-  const isStale = cues.length > 0 && !samePreparedFor(preparedFor, { start, end, fade });
+  // A prepared transcript is stale once the range it was prepared for no
+  // longer matches the current controls — the marked selection it covers has
+  // shifted, so the burned-in captions would desync. Fade is deliberately not
+  // part of this: transcription is never fade-widened, so toggling fade never
+  // invalidates a prepared transcript.
+  const isStale = cues.length > 0 && !samePreparedFor(preparedFor, { start, end });
+
+  // `cues` are 0-based relative to whatever `start` was WHEN THEY WERE
+  // PREPARED (preparedFor.start), not necessarily the live `start` — the user
+  // may have nudged it since (that's exactly what `isStale` flags). Offset by
+  // preparedFor.start, not the live value, so cue jump/highlight stay correct
+  // against the (full-source) preview player even while stale.
+  const cueOffset = preparedFor?.start ?? start;
 
   const activeCueIndex = useMemo(
-    () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
-    [cues, currentTime],
+    () => cues.findIndex((cue) => currentTime >= cue.start + cueOffset && currentTime < cue.end + cueOffset),
+    [cues, currentTime, cueOffset],
   );
 
   useEffect(() => {
@@ -254,9 +263,9 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
     setPrepError(null);
     setCuesError(null);
     setPrepMessage('Queuing transcription…');
-    const target: PreparedFor = { start, end, fade };
+    const target: PreparedFor = { start, end };
     try {
-      const job = await createClipTranscribeJob({ assetId: source.assetId, startTime: start, endTime: end, fade });
+      const job = await createClipTranscribeJob({ assetId: source.assetId, startTime: start, endTime: end });
       onDraftChange({ prepJobId: job.jobId, preparingFor: target });
     } catch (err) {
       setPrepError(describeError(err));
@@ -421,8 +430,8 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
                   {cuesError && <p className="shorts-error">Couldn’t load the transcript: {cuesError}</p>}
                   {isStale && (
                     <p className="shorts-hint">
-                      Your clip's start, end, or fade setting changed since this transcript was prepared — it no longer
-                      matches. Re-prepare it before exporting with subtitles.
+                      Your clip's start or end changed since this transcript was prepared — it no longer matches.
+                      Re-prepare it before exporting with subtitles.
                     </p>
                   )}
                   {!isStale && (
@@ -461,10 +470,10 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
                   role="listitem"
                   ref={(el) => { cueRefs.current[cueIndex] = el; }}
                   className={`shorts-cue${cueIndex === activeCueIndex ? ' active' : ''}`}
-                  onClick={() => jumpTo(cue.start)}
+                  onClick={() => jumpTo(cue.start + cueOffset)}
                   title="Jump this player to this point"
                 >
-                  <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
+                  <span className="shorts-cue-time">{formatTimecode(cue.start + cueOffset)}</span>
                   <span className="shorts-cue-text">{cue.text || '…'}</span>
                 </button>
               ))}
@@ -482,19 +491,19 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
           </p>
           {isStale && (
             <p className="shorts-error">
-              This transcript no longer matches your current clip range/fade — re-prepare it above before exporting.
+              This transcript no longer matches your current clip range — re-prepare it above before exporting.
             </p>
           )}
           <div className="shorts-transcript-edit-list">
             {cues.map((cue, index) => (
               <div key={`cue-edit-${index}`} className="shorts-transcript-edit-row">
-                <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
+                <span className="shorts-cue-time">{formatTimecode(cue.start + cueOffset)}</span>
                 <input
                   className="shorts-transcript-edit-input"
                   type="text"
                   value={cue.text}
                   onChange={(event) => updateCue(index, event.target.value)}
-                  aria-label={`Cue at ${formatTimecode(cue.start)}`}
+                  aria-label={`Cue at ${formatTimecode(cue.start + cueOffset)}`}
                 />
                 <button type="button" className="btn remove-clip" title="Delete this cue" onClick={() => removeCue(index)}>
                   ✕

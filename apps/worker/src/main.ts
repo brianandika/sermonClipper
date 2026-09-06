@@ -1775,14 +1775,18 @@ async function processClipJob(payload: ClipProcessJobData) {
 //    built without first running a full sermon job, and every short of this
 //    asset can reuse the same transcript.
 //  - Scoped (range present): used by the "clip" flow to transcribe only the
-//    clip's own window (+ fade padding) instead of the whole video. Writes the
-//    transcript to a job-scoped path via a Result row (transcriptPath only,
-//    no video/audio) rather than touching Asset.transcriptPath — a source can
-//    be clipped many times with different, unrelated ranges, so nothing here
-//    should be treated as "the" transcript for the whole asset. The resulting
-//    VTT is already 0-based relative to the clip's own effective window
-//    (window.effectiveStart), ready to hand straight to buildAssFromVtt(vtt,
-//    0, effectiveDuration, ...) with no further offset.
+//    marked [startTime, endTime] instead of the whole video — deliberately
+//    NOT fade-widened, so the resulting VTT is 0-based relative to startTime,
+//    matching what the frontend already has locally (no offset needs
+//    communicating back just to jump/highlight cues against the preview
+//    player). Writes the transcript to a job-scoped path via a Result row
+//    (transcriptPath only, no video/audio) rather than touching
+//    Asset.transcriptPath — a source can be clipped many times with
+//    different, unrelated ranges, so nothing here should be treated as "the"
+//    transcript for the whole asset. processGeneralClipJob independently
+//    re-offsets these same cues by its own fadeInSeconds when burning them
+//    into the (possibly fade-padded) final output — see its buildAssFromVtt
+//    call.
 //
 // Unlike the sermon path's best-effort transcription, a failure here is fatal
 // in both modes — the caller (Shorts' moment picker, or the Clip export gate)
@@ -1814,22 +1818,21 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
 
         await mkdir(jobRoot, { recursive: true });
 
+        // Deliberately NOT fade-widened: this transcribes exactly the marked
+        // [startTime, endTime] the user selected, so its cue times are 0-based
+        // relative to startTime — matching what the frontend already has
+        // locally, with no extra offset to communicate back for correct
+        // cue-jump/highlight behavior against the (full-source) preview
+        // player. The burn-in step (processGeneralClipJob) independently
+        // recomputes its own fade window and re-offsets these same cues by
+        // its fadeInSeconds when placing them in the final (possibly padded)
+        // output — see the buildAssFromVtt call there.
         let extractWindow: { start: number; duration: number } | undefined;
-        let scopedEffectiveDuration = 0;
+        let scopedDuration = 0;
 
         if (isScoped) {
-            const sourceDuration = (await detectOutputDuration(job.id, job.asset.sourcePath))
-                ?? job.asset.duration
-                ?? request.endTime;
-            const window = resolveClipWindow(
-                request.startTime,
-                request.endTime,
-                sourceDuration,
-                request.fade === true,
-                CLIP_FADE_SECONDS,
-            );
-            scopedEffectiveDuration = window.effectiveEnd - window.effectiveStart;
-            extractWindow = { start: window.effectiveStart, duration: scopedEffectiveDuration };
+            scopedDuration = request.endTime - request.startTime;
+            extractWindow = { start: request.startTime, duration: scopedDuration };
         }
 
         // Scoped: job-local, never touches the asset. Unscoped: stored next to
@@ -1888,8 +1891,8 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
             await prisma.result.upsert({
                 where: { jobId: job.id },
-                update: { sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedEffectiveDuration, expiresAt },
-                create: { jobId: job.id, sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedEffectiveDuration, expiresAt },
+                update: { sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedDuration, expiresAt },
+                create: { jobId: job.id, sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedDuration, expiresAt },
             });
         }
         else {
@@ -2234,12 +2237,17 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
         // the job unless a reviewed transcript for this exact clip was
         // attached to the request, so any miss here is a hard failure, not a
         // silent degrade. request.captionsVtt was produced by a scoped
-        // transcribeSource job given this SAME startTime/endTime/fade, so it's
-        // already 0-based relative to the effective (fade-widened) window —
-        // slice it with clipStart=0, not window.effectiveStart. This is
-        // deliberately decoupled from Asset.transcriptPath (the whole-video
-        // transcript Shorts uses): a source can be clipped many times with
-        // different, unrelated ranges.
+        // transcribeSource job given this SAME startTime/endTime, and is
+        // 0-based relative to startTime (NOT window.effectiveStart — see
+        // processTranscribeSourceJob's comment). In THIS (possibly
+        // fade-padded) output, the marked selection's own content doesn't
+        // begin at t=0 — it begins at t=window.fadeInSeconds, once the head
+        // pad plays. buildAssFromVtt's clipStart parameter is subtracted from
+        // each cue's time, so passing -window.fadeInSeconds shifts every cue
+        // forward by exactly that amount, lining them back up with the
+        // padded output regardless of what `fade` was when the transcript
+        // was prepared (toggling fade after preparing never requires
+        // re-transcribing — only re-burning, which always happens anyway).
         let captionsApplied = false;
         if (request.captions === true) {
             if (!(await canBurnCaptions())) {
@@ -2250,8 +2258,8 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             }
             const ass = buildAssFromVtt(
                 request.captionsVtt,
-                0,
-                effectiveDuration,
+                -window.fadeInSeconds,
+                markedDuration,
                 landscapeCaptionStyle(media.width, media.height),
             );
             if (ass.cueCount === 0) {
