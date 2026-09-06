@@ -45,13 +45,17 @@ export class CreateJobDto {
     @IsNumber()
     introDuration?: number;
 
-    // transcribeSource has no clip range; sermon/short both require start/end.
-    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource")
+    // transcribeSource has no clip range by default, but MAY optionally carry
+    // one to scope transcription to just [startTime, endTime] (+ fade padding)
+    // instead of the whole source — see jobs.service.ts's
+    // validateOptionalTranscribeRange for the "both together, ordered" check.
+    // sermon/short/clip all require start/end unconditionally.
+    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource" || o.startTime !== undefined || o.endTime !== undefined)
     @Type(() => Number)
     @IsNumber()
     startTime!: number;
 
-    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource")
+    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource" || o.startTime !== undefined || o.endTime !== undefined)
     @Type(() => Number)
     @IsNumber()
     endTime!: number;
@@ -137,4 +141,10 @@ export class CreateJobDto {
     @IsOptional()
     @IsBoolean()
     fade?: boolean;
+
+    // "clip" only, required when captions === true: the reviewed WebVTT text
+    // to burn in (already scoped/0-based to this clip's own window).
+    @IsOptional()
+    @IsString()
+    captionsVtt?: string;
 }

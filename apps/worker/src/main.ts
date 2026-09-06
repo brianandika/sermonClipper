@@ -760,10 +760,21 @@ async function extractAudio(jobId: string, videoPath: string, audioPath: string)
 // the editor playhead, and the burned-in captions all drift together.
 // `aresample=async=1:first_pts=0` pads the head with real silence so the WAV's
 // t=0 is the container's t=0, and fills any mid-stream gaps the same way.
-async function extractAudioForTranscription(jobId: string, videoPath: string, audioPath: string) {
+// window, when given, bounds the extraction to [window.start, window.start +
+// window.duration] — used to transcribe just a clip's own range instead of the
+// whole source. Both -ss and -t precede -i so the decode itself never reads
+// past the window (same "input options before -i" invariant as the clip
+// pipeline's ffmpeg call — see processGeneralClipJob).
+async function extractAudioForTranscription(
+    jobId: string,
+    videoPath: string,
+    audioPath: string,
+    window?: { start: number; duration: number },
+) {
     await runFfmpeg(jobId, [
         "-hide_banner",
         "-y",
+        ...(window ? ["-ss", String(window.start), "-t", String(window.duration)] : []),
         "-i",
         videoPath,
         "-vn",
@@ -1756,11 +1767,26 @@ async function processClipJob(payload: ClipProcessJobData) {
     }
 }
 
-// transcribeSource: transcribe an uploaded source video on demand so shorts can
-// be built without first running a full sermon job. Writes the .vtt next to the
-// asset source and records Asset.transcriptPath. No Result row. Unlike the
-// sermon path's best-effort transcription, a failure here is fatal — a short
-// needs the transcript to pick moments and (optionally) burn captions.
+// transcribeSource: transcribe an uploaded source video on demand. Two modes,
+// discriminated by whether the request carries a [startTime, endTime]:
+//
+//  - Unscoped (no range): transcribes the WHOLE source, writes the .vtt next
+//    to the asset source, and records Asset.transcriptPath — so shorts can be
+//    built without first running a full sermon job, and every short of this
+//    asset can reuse the same transcript.
+//  - Scoped (range present): used by the "clip" flow to transcribe only the
+//    clip's own window (+ fade padding) instead of the whole video. Writes the
+//    transcript to a job-scoped path via a Result row (transcriptPath only,
+//    no video/audio) rather than touching Asset.transcriptPath — a source can
+//    be clipped many times with different, unrelated ranges, so nothing here
+//    should be treated as "the" transcript for the whole asset. The resulting
+//    VTT is already 0-based relative to the clip's own effective window
+//    (window.effectiveStart), ready to hand straight to buildAssFromVtt(vtt,
+//    0, effectiveDuration, ...) with no further offset.
+//
+// Unlike the sermon path's best-effort transcription, a failure here is fatal
+// in both modes — the caller (Shorts' moment picker, or the Clip export gate)
+// needs the transcript to proceed.
 async function processTranscribeSourceJob(payload: ClipProcessJobData) {
     await assertJobNotCanceled(payload.jobId);
     startJobCancellationWatcher(payload.jobId);
@@ -1779,14 +1805,40 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             throw new Error("Transcription is disabled on this worker (ENABLE_TRANSCRIPTION=false)");
         }
 
+        const request = job.payloadJson as unknown as CreateJobRequest;
+        const isScoped = request.startTime !== undefined && request.endTime !== undefined;
+
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
         const jobRoot = getJobRoot(job.sessionId, job.id);
         const workingAudioPath = join(jobRoot, "source-audio.wav");
-        // Store the transcript alongside the asset source so it survives beyond
-        // this transient job and can be reused by every short of this asset.
-        const transcriptPath = join(dirname(job.asset.sourcePath), "transcript.vtt");
 
         await mkdir(jobRoot, { recursive: true });
+
+        let extractWindow: { start: number; duration: number } | undefined;
+        let scopedEffectiveDuration = 0;
+
+        if (isScoped) {
+            const sourceDuration = (await detectOutputDuration(job.id, job.asset.sourcePath))
+                ?? job.asset.duration
+                ?? request.endTime;
+            const window = resolveClipWindow(
+                request.startTime,
+                request.endTime,
+                sourceDuration,
+                request.fade === true,
+                CLIP_FADE_SECONDS,
+            );
+            scopedEffectiveDuration = window.effectiveEnd - window.effectiveStart;
+            extractWindow = { start: window.effectiveStart, duration: scopedEffectiveDuration };
+        }
+
+        // Scoped: job-local, never touches the asset. Unscoped: stored next to
+        // the asset source so it survives this transient job and is reused by
+        // every short of this asset.
+        const transcriptPath = isScoped
+            ? join(jobRoot, "clip-transcript.vtt")
+            : join(dirname(job.asset.sourcePath), "transcript.vtt");
+
         await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.preparing,
             effectiveHardware,
@@ -1795,10 +1847,10 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             stageProgress: 0,
             overallProgress: 5,
             transcriptProgress: 0,
-            message: "Extracting audio for transcription",
+            message: isScoped ? "Extracting clip audio for transcription" : "Extracting audio for transcription",
         });
 
-        await extractAudioForTranscription(job.id, job.asset.sourcePath, workingAudioPath);
+        await extractAudioForTranscription(job.id, job.asset.sourcePath, workingAudioPath, extractWindow);
 
         await assertJobNotCanceled(job.id);
         await enqueueProgressWrite(job.id, {
@@ -1807,7 +1859,7 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             stageProgress: 10,
             overallProgress: 20,
             transcriptProgress: 0,
-            message: "Transcribing source audio",
+            message: isScoped ? "Transcribing clip audio" : "Transcribing source audio",
         });
 
         let producedTranscript: string | null = null;
@@ -1826,13 +1878,26 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
         await assertJobNotCanceled(job.id);
 
         if (!producedTranscript) {
-            throw new Error("Transcription produced no transcript for the source video");
+            throw new Error(isScoped
+                ? "Transcription produced no transcript for this clip"
+                : "Transcription produced no transcript for the source video");
         }
 
-        await prisma.asset.update({
-            where: { id: job.assetId },
-            data: { transcriptPath: producedTranscript },
-        });
+        if (isScoped) {
+            const expiresAt = new Date();
+            expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
+            await prisma.result.upsert({
+                where: { jobId: job.id },
+                update: { sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedEffectiveDuration, expiresAt },
+                create: { jobId: job.id, sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedEffectiveDuration, expiresAt },
+            });
+        }
+        else {
+            await prisma.asset.update({
+                where: { id: job.assetId },
+                data: { transcriptPath: producedTranscript },
+            });
+        }
 
         await enqueueProgressWrite(job.id, {
             status: PrismaJobStatus.completed,
@@ -1842,7 +1907,7 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             stageProgress: 100,
             overallProgress: 100,
             transcriptProgress: 100,
-            message: "Source transcript ready",
+            message: isScoped ? "Clip transcript ready" : "Source transcript ready",
         });
     }
     finally {
@@ -2165,24 +2230,28 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             ? "fade skipped: not enough surrounding footage"
             : "";
 
-        // Captions: unlike "short", this is blocking — the API already promised
-        // the transcript exists when captions were requested, so any miss here
-        // is a hard failure, not a silent degrade. Sliced against the widened
-        // window (not the marked one) so caption timing matches the encode,
-        // which reads from window.effectiveStart, not request.startTime.
+        // Captions: unlike "short", this is blocking — the API already rejects
+        // the job unless a reviewed transcript for this exact clip was
+        // attached to the request, so any miss here is a hard failure, not a
+        // silent degrade. request.captionsVtt was produced by a scoped
+        // transcribeSource job given this SAME startTime/endTime/fade, so it's
+        // already 0-based relative to the effective (fade-widened) window —
+        // slice it with clipStart=0, not window.effectiveStart. This is
+        // deliberately decoupled from Asset.transcriptPath (the whole-video
+        // transcript Shorts uses): a source can be clipped many times with
+        // different, unrelated ranges.
         let captionsApplied = false;
         if (request.captions === true) {
             if (!(await canBurnCaptions())) {
                 throw new Error("Cannot burn in subtitles: this worker's FFmpeg has no libass support");
             }
-            if (!job.asset.transcriptPath || !existsSync(job.asset.transcriptPath)) {
-                throw new Error("Cannot burn in subtitles: the source has no transcript");
+            if (!request.captionsVtt?.trim()) {
+                throw new Error("Cannot burn in subtitles: no reviewed transcript was provided with this job");
             }
-            const vtt = await readFile(job.asset.transcriptPath, "utf8");
             const ass = buildAssFromVtt(
-                vtt,
-                window.effectiveStart,
-                window.effectiveEnd,
+                request.captionsVtt,
+                0,
+                effectiveDuration,
                 landscapeCaptionStyle(media.width, media.height),
             );
             if (ass.cueCount === 0) {

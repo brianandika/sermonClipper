@@ -1,15 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Asset, Job } from '../types';
 import {
   createClipJob,
-  createTranscribeJob,
-  getAsset,
+  createClipTranscribeJob,
   getAssetSourceUrl,
-  getAssetTranscriptText,
   getClipsForAsset,
   getJob,
+  getResult,
   getResultArtifact,
-  updateAssetTranscript,
+  getResultTranscriptText,
 } from '../api';
 
 interface ClipFlowProps {
@@ -17,8 +16,10 @@ interface ClipFlowProps {
   // only reachable via "Upload to Clip".
   source: Asset;
   onSourceChange: (asset: Asset) => void;
-  // In-flight transcription job id for `source` (lifted to App, same reason as
+  // In-flight clip-transcription job id (lifted to App, same reason as
   // ShortsFlow's prepJobId — switching tabs never remounts and re-fires it).
+  // Unlike Shorts, this is scoped to the clip's own [start, end, fade], not
+  // the whole source — see createClipTranscribeJob.
   prepJobId: string | null;
   onPrepJobId: (jobId: string | null) => void;
 }
@@ -27,6 +28,15 @@ interface Cue {
   start: number;
   end: number;
   text: string;
+}
+
+// What [start, end, fade] a prepared transcript actually covers. Compared
+// against the current controls to detect a stale transcript (the user moved
+// the trim points or toggled fade after preparing).
+interface PreparedFor {
+  start: number;
+  end: number;
+  fade: boolean;
 }
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'canceled', 'expired'];
@@ -65,11 +75,46 @@ function parseVtt(text: string): Cue[] {
   return cues;
 }
 
+// The inverse of parseVtt: serialize edited cues back into WebVTT text to send
+// as captionsVtt on export. Cues emptied out during review are dropped.
+function formatVttTimestamp(seconds: number): string {
+  const clamped = Math.max(0, seconds);
+  const h = Math.floor(clamped / 3600);
+  const m = Math.floor((clamped % 3600) / 60);
+  const s = Math.floor(clamped % 60);
+  const ms = Math.round((clamped - Math.floor(clamped)) * 1000);
+  const pad = (n: number, len = 2) => String(n).padStart(len, '0');
+  return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms, 3)}`;
+}
+
+function cuesToVtt(cues: Cue[]): string {
+  const body = cues
+    .filter((cue) => cue.text.trim().length > 0)
+    .map((cue) => `${formatVttTimestamp(cue.start)} --> ${formatVttTimestamp(cue.end)}\n${cue.text.trim()}`)
+    .join('\n\n');
+  return `WEBVTT\n\n${body}\n`;
+}
+
 function formatTimecode(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+// Pull the human-readable message out of an axios error's response body
+// (NestJS exceptions serialize to { statusCode, message, ... }) instead of the
+// generic "Request failed with status code 400" axios itself produces.
+function axiosErrorMessage(err: unknown): string | null {
+  const data = (err as { response?: { data?: { message?: unknown } } })?.response?.data;
+  const message = data?.message;
+  if (typeof message === 'string') return message;
+  if (Array.isArray(message) && message.length > 0) return String(message[0]);
+  return null;
+}
+
+function describeError(err: unknown): string {
+  return axiosErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
 }
 
 function slugify(value: string): string {
@@ -91,7 +136,9 @@ function rangeError(start: number, end: number, duration: number): string | null
 }
 
 export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobId }: ClipFlowProps) {
+  void onSourceChange; // reserved: nothing here mutates the source asset itself
   const videoRef = useRef<HTMLVideoElement>(null);
+  const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sourceDuration = source.duration ?? 0;
 
   // Trim range
@@ -104,15 +151,18 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
   // Fade toggle
   const [fade, setFade] = useState(false);
 
-  // Subtitles toggle + transcript prep/review
+  // Subtitles toggle + clip-scoped transcript prep/review. Unlike Shorts, this
+  // transcript is NEVER written to the asset — it only ever covers this one
+  // clip's own window, held entirely client-side until export.
   const [burnSubtitles, setBurnSubtitles] = useState(false);
   const [prepMessage, setPrepMessage] = useState('');
   const [prepError, setPrepError] = useState<string | null>(null);
   const [cues, setCues] = useState<Cue[]>([]);
   const [cuesError, setCuesError] = useState<string | null>(null);
-  const [draftCues, setDraftCues] = useState<Cue[]>([]);
-  const [savingTranscript, setSavingTranscript] = useState(false);
-  const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
+  const [preparedFor, setPreparedFor] = useState<PreparedFor | null>(null);
+  // What [start, end, fade] the in-flight prepJobId was launched for — read
+  // when it completes, since the controls may have moved on by then.
+  const preparingForRef = useRef<PreparedFor | null>(null);
 
   // Export
   const [exporting, setExporting] = useState(false);
@@ -120,7 +170,21 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
   const [exportError, setExportError] = useState<string | null>(null);
   const [savedClips, setSavedClips] = useState<Job[]>([]);
 
-  const hasTranscript = Boolean(source.transcriptPath);
+  // A prepared transcript is stale once the range or fade it was prepared for
+  // no longer matches the current controls — the effective (fade-widened)
+  // window it covers has shifted, so the burned-in captions would desync.
+  const isStale = cues.length > 0 && preparedFor !== null
+    && (preparedFor.start !== start || preparedFor.end !== end || preparedFor.fade !== fade);
+
+  const activeCueIndex = useMemo(
+    () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
+    [cues, currentTime],
+  );
+
+  useEffect(() => {
+    if (activeCueIndex < 0) return;
+    cueRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeCueIndex]);
 
   // Load this source's previously exported clips on mount.
   useEffect(() => {
@@ -136,29 +200,16 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source.assetId]);
 
-  // Load the transcript once it exists, so the review panel and cue list have
-  // something to show as soon as "Burn in subtitles" is checked.
-  useEffect(() => {
-    if (!hasTranscript) return;
-    let cancelled = false;
-    setCuesError(null);
-    getAssetTranscriptText(source.assetId)
-      .then((text) => {
-        if (!cancelled) setCues(parseVtt(text));
-      })
-      .catch((err) => {
-        if (!cancelled) setCuesError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hasTranscript, source.assetId]);
-
-  // Poll an in-flight transcription; when it finishes, refresh the source (now
-  // transcript-ready) and load its cues. Resumes cleanly on re-mount because
-  // prepJobId lives in App state and the API is idempotent.
+  // Poll an in-flight clip-transcription job; when it finishes, fetch its
+  // (small, clip-scoped) transcript and load it for review. Resumes cleanly
+  // on re-mount because prepJobId lives in App state.
   useEffect(() => {
     if (!prepJobId) return;
+    if (!preparingForRef.current) {
+      // Re-mounted with an already-in-flight job (e.g. tab switch) — best
+      // effort: assume it covers the controls as they currently stand.
+      preparingForRef.current = { start, end, fade };
+    }
     let cancelled = false;
     setPrepError(null);
     (async () => {
@@ -170,33 +221,37 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
         }
         if (TERMINAL_STATUSES.includes(current.status)) {
           if (current.status === 'completed') {
-            const updated = await getAsset(source.assetId);
-            if (!cancelled) {
-              onSourceChange(updated);
-              onPrepJobId(null);
+            try {
+              const result = await getResult(prepJobId);
+              if (!result.resultId) throw new Error('Transcript job finished but produced no result');
+              const text = await getResultTranscriptText(result.resultId);
+              if (!cancelled) {
+                setCues(parseVtt(text));
+                setPreparedFor(preparingForRef.current);
+                setCuesError(null);
+              }
+            } catch (err) {
+              if (!cancelled) setCuesError(describeError(err));
+            } finally {
+              if (!cancelled) onPrepJobId(null);
             }
           } else if (!cancelled) {
             setPrepError(current.failureReason || 'Transcription failed');
             onPrepJobId(null);
           }
+          preparingForRef.current = null;
           return;
         }
         await sleep(1500);
       }
     })().catch((err) => {
-      if (!cancelled) setPrepError(err instanceof Error ? err.message : String(err));
+      if (!cancelled) setPrepError(describeError(err));
     });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prepJobId, source.assetId]);
-
-  // Once cues load (or reload after an edit), reseed the draft so the review
-  // panel always reflects the saved transcript.
-  useEffect(() => {
-    setDraftCues(cues.map((cue) => ({ ...cue })));
-  }, [cues]);
+  }, [prepJobId]);
 
   const clampTime = (value: number) => {
     if (!Number.isFinite(value) || value < 0) return 0;
@@ -219,41 +274,29 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
   // ---- Transcript handlers ----------------------------------------------
   const startTranscription = async () => {
     setPrepError(null);
+    setCuesError(null);
     setPrepMessage('Queuing transcription…');
+    preparingForRef.current = { start, end, fade };
     try {
-      const job = await createTranscribeJob(source.assetId);
+      const job = await createClipTranscribeJob({ assetId: source.assetId, startTime: start, endTime: end, fade });
       onPrepJobId(job.jobId);
     } catch (err) {
-      setPrepError(err instanceof Error ? err.message : String(err));
+      preparingForRef.current = null;
+      setPrepError(describeError(err));
     }
   };
 
-  const updateDraftCue = (index: number, text: string) => {
-    setDraftCues((prev) => prev.map((cue, i) => (i === index ? { ...cue, text } : cue)));
+  const updateCue = (index: number, text: string) => {
+    setCues((prev) => prev.map((cue, i) => (i === index ? { ...cue, text } : cue)));
   };
 
-  const removeDraftCue = (index: number) => {
-    setDraftCues((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const saveTranscript = async () => {
-    setSavingTranscript(true);
-    setTranscriptSaveError(null);
-    try {
-      const updated = await updateAssetTranscript(source.assetId, draftCues);
-      const text = await getAssetTranscriptText(source.assetId);
-      setCues(parseVtt(text));
-      onSourceChange(updated);
-    } catch (err) {
-      setTranscriptSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingTranscript(false);
-    }
+  const removeCue = (index: number) => {
+    setCues((prev) => prev.filter((_, i) => i !== index));
   };
 
   // ---- Export --------------------------------------------------------------
   const validationError = rangeError(start, end, duration);
-  const subtitlesBlocked = burnSubtitles && (!hasTranscript || cues.length === 0);
+  const subtitlesBlocked = burnSubtitles && (cues.length === 0 || isStale);
   const exportDisabled = exporting || Boolean(validationError) || subtitlesBlocked;
 
   const runExport = async () => {
@@ -268,6 +311,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
         endTime: end,
         fade,
         captions: burnSubtitles,
+        captionsVtt: burnSubtitles ? cuesToVtt(cues) : undefined,
         title,
         outputVideoFilename: `${slugify(title || 'clip')}.mp4`,
       });
@@ -290,7 +334,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
       setSavedClips((prev) => [finished as Job, ...prev]);
       setExportMessage('');
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : String(err));
+      setExportError(describeError(err));
     } finally {
       setExporting(false);
     }
@@ -307,144 +351,181 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
         <p className="shorts-subtitle">Source: {source.originalFilename}</p>
       </header>
 
-      <div className="shorts-preview">
-        <video
-          ref={videoRef}
-          className="shorts-video"
-          controls
-          onLoadedMetadata={(event) => {
-            const value = event.currentTarget.duration;
-            if (Number.isFinite(value) && value > 0) {
-              setDuration(value);
-              if (end <= 0) setEnd(Number(value.toFixed(3)));
-            }
-          }}
-          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-        >
-          <source src={getAssetSourceUrl(source.assetId)} type={source.mimeType || 'video/mp4'} />
-          Your browser does not support video playback.
-        </video>
-      </div>
+      <div className="shorts-editor-body">
+        <section className="shorts-preview-col">
+          <div className="shorts-preview">
+            <video
+              ref={videoRef}
+              className="shorts-video"
+              controls
+              onLoadedMetadata={(event) => {
+                const value = event.currentTarget.duration;
+                if (Number.isFinite(value) && value > 0) {
+                  setDuration(value);
+                  if (end <= 0) setEnd(Number(value.toFixed(3)));
+                }
+              }}
+              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            >
+              <source src={getAssetSourceUrl(source.assetId)} type={source.mimeType || 'video/mp4'} />
+              Your browser does not support video playback.
+            </video>
+          </div>
 
-      <p className="shorts-playhead">
-        Playhead: <strong>{formatTimecode(currentTime)}</strong>
-        {duration > 0 ? ` / ${formatTimecode(duration)}` : ''}
-      </p>
+          <p className="shorts-playhead">
+            Playhead: <strong>{formatTimecode(currentTime)}</strong>
+            {duration > 0 ? ` / ${formatTimecode(duration)}` : ''}
+          </p>
 
-      <div className="shorts-range">
-        <label>
-          Start
-          <input type="text" value={start.toFixed(3)} onChange={(event) => setStart(Number.parseFloat(event.target.value))} />
-        </label>
-        <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent('start')}>Set</button>
-        <button type="button" className="btn" onClick={() => jumpTo(start)}>Jump</button>
-      </div>
+          <div className="shorts-range">
+            <label>
+              Start
+              <input type="text" value={start.toFixed(3)} onChange={(event) => setStart(Number.parseFloat(event.target.value))} />
+            </label>
+            <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent('start')}>Set</button>
+            <button type="button" className="btn" onClick={() => jumpTo(start)}>Jump</button>
+          </div>
 
-      <div className="shorts-range">
-        <label>
-          End
-          <input type="text" value={end.toFixed(3)} onChange={(event) => setEnd(Number.parseFloat(event.target.value))} />
-        </label>
-        <button type="button" className="btn set-end-time" onClick={() => setBoundToCurrent('end')}>Set</button>
-        <button type="button" className="btn" onClick={() => jumpTo(end)}>Jump</button>
-      </div>
+          <div className="shorts-range">
+            <label>
+              End
+              <input type="text" value={end.toFixed(3)} onChange={(event) => setEnd(Number.parseFloat(event.target.value))} />
+            </label>
+            <button type="button" className="btn set-end-time" onClick={() => setBoundToCurrent('end')}>Set</button>
+            <button type="button" className="btn" onClick={() => jumpTo(end)}>Jump</button>
+          </div>
 
-      <p className="shorts-hint">
-        Clip length: {formatTimecode(clipLength)}
-        {fade ? ` — output will be about ${formatTimecode(totalOutputLength)} with fades` : ''}
-      </p>
+          <p className="shorts-hint">
+            Clip length: {formatTimecode(clipLength)}
+            {fade ? ` — output will be about ${formatTimecode(totalOutputLength)} with fades` : ''}
+          </p>
 
-      {validationError && <p className="shorts-error">{validationError}</p>}
+          {validationError && <p className="shorts-error">{validationError}</p>}
 
-      <label>
-        Title (optional)
-        <input
-          type="text"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="e.g. Missions update"
-          style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
-        />
-      </label>
+          <label>
+            Title (optional)
+            <input
+              type="text"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="e.g. Missions update"
+              style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+            />
+          </label>
 
-      <label className="shorts-toggle">
-        <input type="checkbox" checked={fade} onChange={(event) => setFade(event.target.checked)} />
-        Fade in and out (3 seconds, to black)
-      </label>
-      <p className="shorts-hint">
-        Adds up to 3 seconds before and after your selection, using a bit of the surrounding footage.
-        Your trimmed clip itself isn't shortened or dimmed.
-      </p>
+          <label className="shorts-toggle">
+            <input type="checkbox" checked={fade} onChange={(event) => setFade(event.target.checked)} />
+            Fade in and out (3 seconds, to black)
+          </label>
+          <p className="shorts-hint">
+            Adds up to 3 seconds before and after your selection, using a bit of the surrounding footage.
+            Your trimmed clip itself isn't shortened or dimmed.
+          </p>
 
-      <label className="shorts-toggle">
-        <input type="checkbox" checked={burnSubtitles} onChange={(event) => setBurnSubtitles(event.target.checked)} />
-        Burn in subtitles
-      </label>
+          <label className="shorts-toggle">
+            <input type="checkbox" checked={burnSubtitles} onChange={(event) => setBurnSubtitles(event.target.checked)} />
+            Burn in subtitles
+          </label>
 
-      {burnSubtitles && !hasTranscript && (
-        <div className="shorts-prep">
-          {prepJobId ? (
-            <>
-              <p className="shorts-prep-message">{prepMessage || 'Transcribing…'}</p>
-              <div className="shorts-spinner" aria-hidden="true" />
-              <p className="shorts-hint">
-                This transcribes the whole video and only runs once for this file — long recordings take a while.
-                You can leave this tab; it won't restart.
-              </p>
-            </>
-          ) : (
-            <>
-              {prepError && <p className="shorts-error">{prepError}</p>}
-              <p className="shorts-hint">This video has no transcript yet. Preparing one lets you review it before it's burned in.</p>
-              <button type="button" className="btn" onClick={startTranscription}>
-                {prepError ? 'Retry transcript' : 'Prepare transcript'}
-              </button>
-            </>
+          {burnSubtitles && (cues.length === 0 || (!prepJobId && isStale)) && (
+            <div className="shorts-prep">
+              {prepJobId ? (
+                <>
+                  <p className="shorts-prep-message">{prepMessage || 'Transcribing…'}</p>
+                  <div className="shorts-spinner" aria-hidden="true" />
+                  <p className="shorts-hint">
+                    Transcribing just this clip — much faster than the whole video. You can leave this tab; it won't restart.
+                  </p>
+                </>
+              ) : (
+                <>
+                  {prepError && <p className="shorts-error">{prepError}</p>}
+                  {cuesError && <p className="shorts-error">Couldn’t load the transcript: {cuesError}</p>}
+                  {isStale && (
+                    <p className="shorts-hint">
+                      Your clip's start, end, or fade setting changed since this transcript was prepared — it no longer
+                      matches. Re-prepare it before exporting with subtitles.
+                    </p>
+                  )}
+                  {!isStale && (
+                    <p className="shorts-hint">
+                      This clip has no transcript yet. Preparing one transcribes just your selected range — not the
+                      whole video — so you can review it before it's burned in.
+                    </p>
+                  )}
+                  <button type="button" className="btn" onClick={startTranscription} disabled={Boolean(validationError)}>
+                    {prepError || isStale ? 'Re-prepare transcript' : 'Prepare transcript'}
+                  </button>
+                </>
+              )}
+            </div>
           )}
-        </div>
-      )}
 
-      {burnSubtitles && hasTranscript && (
+          {exportError && <p className="shorts-error">{exportError}</p>}
+
+          <button type="button" className="btn results-download-btn" disabled={exportDisabled} onClick={runExport}>
+            {exporting ? (exportMessage || 'Exporting…') : 'Export clip'}
+          </button>
+        </section>
+
+        <section className="shorts-transcript-col">
+          <h3 className="shorts-section-title">Transcript</h3>
+          {cues.length === 0 ? (
+            <p className="shorts-hint">
+              {burnSubtitles ? 'Prepare a transcript above to see it here.' : 'Check "Burn in subtitles" to prepare a transcript for this clip.'}
+            </p>
+          ) : (
+            <div className="shorts-transcript" role="list">
+              {cues.map((cue, cueIndex) => (
+                <button
+                  key={`cue-${cueIndex}`}
+                  type="button"
+                  role="listitem"
+                  ref={(el) => { cueRefs.current[cueIndex] = el; }}
+                  className={`shorts-cue${cueIndex === activeCueIndex ? ' active' : ''}`}
+                  onClick={() => jumpTo(cue.start)}
+                  title="Jump this player to this point"
+                >
+                  <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
+                  <span className="shorts-cue-text">{cue.text || '…'}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      {burnSubtitles && cues.length > 0 && (
         <section className="shorts-transcript-editor">
           <h2 className="shorts-section-title">Review transcript</h2>
           <p className="shorts-hint">
-            Check for mistakes before they're burned into the video. Timestamps stay as they are.
-            Saving also updates the transcript everywhere else this video is used.
+            Check for mistakes before they're burned into the video — timestamps stay as they are. Edits here apply
+            automatically when you export; nothing is saved until then.
           </p>
-          {cuesError && <p className="shorts-error">Couldn’t load the transcript: {cuesError}</p>}
-          {transcriptSaveError && <p className="shorts-error">{transcriptSaveError}</p>}
+          {isStale && (
+            <p className="shorts-error">
+              This transcript no longer matches your current clip range/fade — re-prepare it above before exporting.
+            </p>
+          )}
           <div className="shorts-transcript-edit-list">
-            {draftCues.map((cue, index) => (
-              <div key={`draft-${index}`} className="shorts-transcript-edit-row">
+            {cues.map((cue, index) => (
+              <div key={`cue-edit-${index}`} className="shorts-transcript-edit-row">
                 <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
                 <input
                   className="shorts-transcript-edit-input"
                   type="text"
                   value={cue.text}
-                  onChange={(event) => updateDraftCue(index, event.target.value)}
+                  onChange={(event) => updateCue(index, event.target.value)}
                   aria-label={`Cue at ${formatTimecode(cue.start)}`}
                 />
-                <button type="button" className="btn remove-clip" title="Delete this cue" onClick={() => removeDraftCue(index)}>
+                <button type="button" className="btn remove-clip" title="Delete this cue" onClick={() => removeCue(index)}>
                   ✕
                 </button>
               </div>
             ))}
           </div>
-          <button type="button" className="btn" onClick={saveTranscript} disabled={savingTranscript}>
-            {savingTranscript ? 'Saving…' : 'Save transcript'}
-          </button>
         </section>
       )}
-
-      {subtitlesBlocked && (
-        <p className="shorts-hint">Prepare and review the transcript above before exporting with subtitles.</p>
-      )}
-
-      {exportError && <p className="shorts-error">{exportError}</p>}
-
-      <button type="button" className="btn results-download-btn" disabled={exportDisabled} onClick={runExport}>
-        {exporting ? (exportMessage || 'Exporting…') : 'Export clip'}
-      </button>
 
       {savedClips.length > 0 && (
         <section className="shorts-saved">

@@ -158,6 +158,12 @@ export interface CreateJobRequest {
     // false. Each side is independently clamped to whatever real footage
     // exists before startTime / after endTime.
     fade?: boolean;
+    // "clip" only, required when captions === true: the reviewed WebVTT text
+    // to burn in, already scoped and 0-based to this clip's own effective
+    // (fade-widened) window — produced by a "transcribeSource" job that was
+    // itself given this same startTime/endTime/fade (see below). The API
+    // rejects the job if captions is true and this is missing/empty.
+    captionsVtt?: string;
 }
 
 export interface JobResponse {

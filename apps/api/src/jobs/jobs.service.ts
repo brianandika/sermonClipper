@@ -105,6 +105,36 @@ function validateGeneralClipRange(payload: CreateJobDto) {
     }
 }
 
+// transcribeSource's startTime/endTime are optional (absent = transcribe the
+// whole source, the original Shorts-prep behaviour) but if either is present,
+// both must be, and ordered. Used to scope transcription to a "clip" export's
+// own range instead of the whole video.
+function validateOptionalTranscribeRange(payload: CreateJobDto) {
+    const hasStart = payload.startTime !== undefined;
+    const hasEnd = payload.endTime !== undefined;
+    if (!hasStart && !hasEnd) {
+        return;
+    }
+    if (hasStart !== hasEnd) {
+        throw new BadRequestException("startTime and endTime must be provided together");
+    }
+    if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
+        throw new BadRequestException("startTime and endTime must be numbers");
+    }
+    if (payload.startTime < 0) {
+        throw new BadRequestException("startTime must be >= 0");
+    }
+    if (payload.startTime >= payload.endTime) {
+        throw new BadRequestException("startTime must be less than endTime");
+    }
+}
+
+// A scoped (clip-window) transcribeSource request always carries its own
+// startTime — used to key idempotency separately per range (see create()).
+function isScopedTranscribeRequest(payload: CreateJobDto): boolean {
+    return payload.startTime !== undefined || payload.endTime !== undefined;
+}
+
 @Injectable()
 export class JobsService {
     constructor(
@@ -118,8 +148,11 @@ export class JobsService {
 
         // Idempotency: never queue a second transcription for a source that is
         // already being transcribed. Re-mounting the Shorts tab or double-clicks
-        // return the in-flight job instead of piling up duplicates.
-        if (kind === "transcribeSource") {
+        // return the in-flight job instead of piling up duplicates. Only applies
+        // to the legacy whole-source prep (no startTime/endTime) — a scoped,
+        // per-clip transcription is cheap and always fresh, and different clip
+        // ranges on the same asset must never dedupe against each other.
+        if (kind === "transcribeSource" && !isScopedTranscribeRequest(payload)) {
             const activeTranscription = await this.prisma.job.findFirst({
                 where: {
                     sessionId,
@@ -152,21 +185,19 @@ export class JobsService {
         else if (kind === "clip") {
             validateGeneralClipRange(payload);
 
-            // Burned-in subtitles are blocking for this kind: the transcript must
-            // already exist (and have been reviewed) before we render.
-            if (payload.captions === true) {
-                const asset = await this.prisma.asset.findFirst({
-                    where: { id: assetId, sessionId },
-                    select: { transcriptPath: true },
-                });
-                if (!asset?.transcriptPath) {
-                    throw new BadRequestException(
-                        "Burning in subtitles requires a transcript. Prepare and review the transcript first.",
-                    );
-                }
+            // Burned-in subtitles are blocking for this kind: a reviewed
+            // transcript for this exact clip must already be attached to the
+            // request (produced by a scoped transcribeSource job the client
+            // ran first) — not just present anywhere on the asset.
+            if (payload.captions === true && !payload.captionsVtt?.trim()) {
+                throw new BadRequestException(
+                    "Burning in subtitles requires a reviewed transcript. Prepare and review the transcript for this clip first.",
+                );
             }
         }
-        // transcribeSource has no clip range to validate.
+        else if (kind === "transcribeSource") {
+            validateOptionalTranscribeRange(payload);
+        }
 
         const requestedHardware = (payload.hardware ?? HardwareOption.auto) as HardwareOption;
         const resolution = await this.jobHardwareService.resolve(requestedHardware);
