@@ -7,7 +7,21 @@ import ClipFlow from './components/ClipFlow';
 import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
 import TranscribeResultsFlow from './components/TranscribeResultsFlow';
-import { Asset, Job, Result, Session } from './types';
+import { Asset, ClipDraft, Job, Result, Session } from './types';
+
+function createClipDraft(source: Asset): ClipDraft {
+  return {
+    start: 0,
+    end: source.duration ?? 0,
+    fade: false,
+    burnSubtitles: false,
+    title: '',
+    cues: [],
+    preparedFor: null,
+    preparingFor: null,
+    prepJobId: null,
+  };
+}
 
 type AppFlow = 'upload' | 'editor' | 'shorts' | 'clip' | 'jobs' | 'results';
 
@@ -32,10 +46,15 @@ function App() {
   // job (reuse path) or the transcribe job (standalone-upload-for-shorts path).
   const [shortsParentJobId, setShortsParentJobId] = useState<string | null>(null);
   const [shortsBusy, setShortsBusy] = useState(false);
-  // Clip source + in-flight transcription, lifted for the same reason as the
-  // Shorts state above.
+  // Clip source + its whole draft (trim points, toggles, transcript-in-
+  // progress), lifted for the same reason as the Shorts state above — see
+  // ClipDraft's own comment for why ClipFlow needs so much more of its state
+  // lifted than ShortsFlow does.
   const [clipSource, setClipSource] = useState<Asset | null>(null);
-  const [clipPrepJobId, setClipPrepJobId] = useState<string | null>(null);
+  const [clipDraft, setClipDraft] = useState<ClipDraft | null>(null);
+  const patchClipDraft = (patch: Partial<ClipDraft>) => {
+    setClipDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
   // Asset backing a transcribe-only "View Result" page (no Result row exists for
   // transcribeSource jobs — the video + transcript come straight from the asset).
   const [transcribeAsset, setTranscribeAsset] = useState<Asset | null>(null);
@@ -86,7 +105,7 @@ function App() {
   // checks "Burn in subtitles".
   const handleUploadForClip = (uploadedAsset: Asset) => {
     setClipSource(uploadedAsset);
-    setClipPrepJobId(null);
+    setClipDraft(createClipDraft(uploadedAsset));
     setFlow('clip');
   };
 
@@ -168,7 +187,7 @@ function App() {
     setShortsPrepJobId(null);
     setShortsParentJobId(null);
     setClipSource(null);
-    setClipPrepJobId(null);
+    setClipDraft(null);
     setTranscribeAsset(null);
     setFlow('upload');
   };
@@ -226,7 +245,7 @@ function App() {
     }
     // Clip is only reachable via "Upload to Clip" — never by clicking the tab
     // with no source.
-    if (nextFlow === 'clip' && !clipSource) {
+    if (nextFlow === 'clip' && (!clipSource || !clipDraft)) {
       return;
     }
     setFlow(nextFlow);
@@ -329,12 +348,11 @@ function App() {
             parentJobId={shortsParentJobId}
           />
         )}
-        {flow === 'clip' && clipSource && (
+        {flow === 'clip' && clipSource && clipDraft && (
           <ClipFlow
             source={clipSource}
-            onSourceChange={setClipSource}
-            prepJobId={clipPrepJobId}
-            onPrepJobId={setClipPrepJobId}
+            draft={clipDraft}
+            onDraftChange={patchClipDraft}
           />
         )}
         {flow === 'jobs' && (

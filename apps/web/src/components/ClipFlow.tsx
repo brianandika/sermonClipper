@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Asset, Job } from '../types';
+import { Asset, ClipDraft, ClipPreparedFor, ClipTranscriptCue, Job } from '../types';
 import {
   createClipJob,
   createClipTranscribeJob,
@@ -15,29 +15,15 @@ interface ClipFlowProps {
   // The uploaded source to clip. Always set before this tab is shown — it is
   // only reachable via "Upload to Clip".
   source: Asset;
-  onSourceChange: (asset: Asset) => void;
-  // In-flight clip-transcription job id (lifted to App, same reason as
-  // ShortsFlow's prepJobId — switching tabs never remounts and re-fires it).
-  // Unlike Shorts, this is scoped to the clip's own [start, end, fade], not
-  // the whole source — see createClipTranscribeJob.
-  prepJobId: string | null;
-  onPrepJobId: (jobId: string | null) => void;
+  // All of this component's per-source state, lifted to App — see ClipDraft's
+  // own comment for why. onDraftChange merges a partial patch, mirroring
+  // ShortsFlow's updateMoment(id, patch).
+  draft: ClipDraft;
+  onDraftChange: (patch: Partial<ClipDraft>) => void;
 }
 
-interface Cue {
-  start: number;
-  end: number;
-  text: string;
-}
-
-// What [start, end, fade] a prepared transcript actually covers. Compared
-// against the current controls to detect a stale transcript (the user moved
-// the trim points or toggled fade after preparing).
-interface PreparedFor {
-  start: number;
-  end: number;
-  fade: boolean;
-}
+type Cue = ClipTranscriptCue;
+type PreparedFor = ClipPreparedFor;
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'canceled', 'expired'];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -117,6 +103,11 @@ function describeError(err: unknown): string {
   return axiosErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
 }
 
+function samePreparedFor(a: PreparedFor | null, b: PreparedFor | null): boolean {
+  if (!a || !b) return a === b;
+  return a.start === b.start && a.end === b.end && a.fade === b.fade;
+}
+
 function slugify(value: string): string {
   const base = value
     .trim()
@@ -135,34 +126,23 @@ function rangeError(start: number, end: number, duration: number): string | null
   return null;
 }
 
-export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobId }: ClipFlowProps) {
-  void onSourceChange; // reserved: nothing here mutates the source asset itself
+export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sourceDuration = source.duration ?? 0;
 
-  // Trim range
-  const [start, setStart] = useState(0);
-  const [end, setEnd] = useState(sourceDuration > 0 ? sourceDuration : 0);
+  // Everything the user chose (trim points, toggles, title, the transcript
+  // itself) lives in `draft`, lifted to App so a tab switch — which unmounts
+  // this component — never loses it. Only purely ephemeral UI feedback
+  // (player position, in-flight status text, this-render-only errors) stays
+  // local below.
+  const { start, end, fade, burnSubtitles, title, cues, preparedFor, preparingFor, prepJobId } = draft;
+
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(sourceDuration);
-  const [title, setTitle] = useState('');
-
-  // Fade toggle
-  const [fade, setFade] = useState(false);
-
-  // Subtitles toggle + clip-scoped transcript prep/review. Unlike Shorts, this
-  // transcript is NEVER written to the asset — it only ever covers this one
-  // clip's own window, held entirely client-side until export.
-  const [burnSubtitles, setBurnSubtitles] = useState(false);
   const [prepMessage, setPrepMessage] = useState('');
   const [prepError, setPrepError] = useState<string | null>(null);
-  const [cues, setCues] = useState<Cue[]>([]);
   const [cuesError, setCuesError] = useState<string | null>(null);
-  const [preparedFor, setPreparedFor] = useState<PreparedFor | null>(null);
-  // What [start, end, fade] the in-flight prepJobId was launched for — read
-  // when it completes, since the controls may have moved on by then.
-  const preparingForRef = useRef<PreparedFor | null>(null);
 
   // Export
   const [exporting, setExporting] = useState(false);
@@ -173,8 +153,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
   // A prepared transcript is stale once the range or fade it was prepared for
   // no longer matches the current controls — the effective (fade-widened)
   // window it covers has shifted, so the burned-in captions would desync.
-  const isStale = cues.length > 0 && preparedFor !== null
-    && (preparedFor.start !== start || preparedFor.end !== end || preparedFor.fade !== fade);
+  const isStale = cues.length > 0 && !samePreparedFor(preparedFor, { start, end, fade });
 
   const activeCueIndex = useMemo(
     () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
@@ -202,14 +181,10 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
 
   // Poll an in-flight clip-transcription job; when it finishes, fetch its
   // (small, clip-scoped) transcript and load it for review. Resumes cleanly
-  // on re-mount because prepJobId lives in App state.
+  // across tab switches because prepJobId AND preparingFor both live in the
+  // lifted draft, not component state.
   useEffect(() => {
     if (!prepJobId) return;
-    if (!preparingForRef.current) {
-      // Re-mounted with an already-in-flight job (e.g. tab switch) — best
-      // effort: assume it covers the controls as they currently stand.
-      preparingForRef.current = { start, end, fade };
-    }
     let cancelled = false;
     setPrepError(null);
     (async () => {
@@ -226,20 +201,24 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
               if (!result.resultId) throw new Error('Transcript job finished but produced no result');
               const text = await getResultTranscriptText(result.resultId);
               if (!cancelled) {
-                setCues(parseVtt(text));
-                setPreparedFor(preparingForRef.current);
+                onDraftChange({ cues: parseVtt(text), preparedFor: preparingFor, prepJobId: null, preparingFor: null });
                 setCuesError(null);
               }
             } catch (err) {
-              if (!cancelled) setCuesError(describeError(err));
-            } finally {
-              if (!cancelled) onPrepJobId(null);
+              const message = describeError(err);
+              if (!cancelled) {
+                setCuesError(
+                  /result not found/i.test(message)
+                    ? `${message} — the worker may still be running old code without clip-scoped transcription support.`
+                    : message,
+                );
+                onDraftChange({ prepJobId: null, preparingFor: null });
+              }
             }
           } else if (!cancelled) {
             setPrepError(current.failureReason || 'Transcription failed');
-            onPrepJobId(null);
+            onDraftChange({ prepJobId: null, preparingFor: null });
           }
-          preparingForRef.current = null;
           return;
         }
         await sleep(1500);
@@ -263,8 +242,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
     const video = videoRef.current;
     if (!video) return;
     const value = Number(clampTime(video.currentTime).toFixed(3));
-    if (bound === 'start') setStart(value);
-    else setEnd(value);
+    onDraftChange(bound === 'start' ? { start: value } : { end: value });
   };
 
   const jumpTo = (seconds: number) => {
@@ -276,22 +254,21 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
     setPrepError(null);
     setCuesError(null);
     setPrepMessage('Queuing transcription…');
-    preparingForRef.current = { start, end, fade };
+    const target: PreparedFor = { start, end, fade };
     try {
       const job = await createClipTranscribeJob({ assetId: source.assetId, startTime: start, endTime: end, fade });
-      onPrepJobId(job.jobId);
+      onDraftChange({ prepJobId: job.jobId, preparingFor: target });
     } catch (err) {
-      preparingForRef.current = null;
       setPrepError(describeError(err));
     }
   };
 
   const updateCue = (index: number, text: string) => {
-    setCues((prev) => prev.map((cue, i) => (i === index ? { ...cue, text } : cue)));
+    onDraftChange({ cues: cues.map((cue, i) => (i === index ? { ...cue, text } : cue)) });
   };
 
   const removeCue = (index: number) => {
-    setCues((prev) => prev.filter((_, i) => i !== index));
+    onDraftChange({ cues: cues.filter((_, i) => i !== index) });
   };
 
   // ---- Export --------------------------------------------------------------
@@ -362,7 +339,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
                 const value = event.currentTarget.duration;
                 if (Number.isFinite(value) && value > 0) {
                   setDuration(value);
-                  if (end <= 0) setEnd(Number(value.toFixed(3)));
+                  if (end <= 0) onDraftChange({ end: Number(value.toFixed(3)) });
                 }
               }}
               onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
@@ -380,7 +357,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
           <div className="shorts-range">
             <label>
               Start
-              <input type="text" value={start.toFixed(3)} onChange={(event) => setStart(Number.parseFloat(event.target.value))} />
+              <input type="text" value={start.toFixed(3)} onChange={(event) => onDraftChange({ start: Number.parseFloat(event.target.value) })} />
             </label>
             <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent('start')}>Set</button>
             <button type="button" className="btn" onClick={() => jumpTo(start)}>Jump</button>
@@ -389,7 +366,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
           <div className="shorts-range">
             <label>
               End
-              <input type="text" value={end.toFixed(3)} onChange={(event) => setEnd(Number.parseFloat(event.target.value))} />
+              <input type="text" value={end.toFixed(3)} onChange={(event) => onDraftChange({ end: Number.parseFloat(event.target.value) })} />
             </label>
             <button type="button" className="btn set-end-time" onClick={() => setBoundToCurrent('end')}>Set</button>
             <button type="button" className="btn" onClick={() => jumpTo(end)}>Jump</button>
@@ -407,14 +384,14 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
             <input
               type="text"
               value={title}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={(event) => onDraftChange({ title: event.target.value })}
               placeholder="e.g. Missions update"
               style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
             />
           </label>
 
           <label className="shorts-toggle">
-            <input type="checkbox" checked={fade} onChange={(event) => setFade(event.target.checked)} />
+            <input type="checkbox" checked={fade} onChange={(event) => onDraftChange({ fade: event.target.checked })} />
             Fade in and out (3 seconds, to black)
           </label>
           <p className="shorts-hint">
@@ -423,7 +400,7 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
           </p>
 
           <label className="shorts-toggle">
-            <input type="checkbox" checked={burnSubtitles} onChange={(event) => setBurnSubtitles(event.target.checked)} />
+            <input type="checkbox" checked={burnSubtitles} onChange={(event) => onDraftChange({ burnSubtitles: event.target.checked })} />
             Burn in subtitles
           </label>
 
@@ -434,7 +411,8 @@ export default function ClipFlow({ source, onSourceChange, prepJobId, onPrepJobI
                   <p className="shorts-prep-message">{prepMessage || 'Transcribing…'}</p>
                   <div className="shorts-spinner" aria-hidden="true" />
                   <p className="shorts-hint">
-                    Transcribing just this clip — much faster than the whole video. You can leave this tab; it won't restart.
+                    Transcribing just this clip — much faster than the whole video. You can switch tabs and come back;
+                    it won't restart.
                   </p>
                 </>
               ) : (

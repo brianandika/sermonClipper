@@ -107,6 +107,42 @@ export interface Result {
   createdAt: string;
 }
 
+// One line of a clip's transcript, as edited/reviewed client-side (never
+// persisted until export). Mirrors the API's TranscriptCue.
+export interface ClipTranscriptCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+// What [start, end, fade] a prepared/in-flight clip transcript covers —
+// compared against the live controls to detect staleness (see ClipFlow).
+export interface ClipPreparedFor {
+  start: number;
+  end: number;
+  fade: boolean;
+}
+
+// All of ClipFlow's per-source state, lifted to App so switching tabs (which
+// unmounts ClipFlow) never loses the user's trim points, toggles, or an
+// in-flight/prepared transcript — the same reason Shorts' state is lifted,
+// but ClipFlow has no server-side "saved moments" list to rehydrate from, so
+// everything here has to survive in React state instead.
+export interface ClipDraft {
+  start: number;
+  end: number;
+  fade: boolean;
+  burnSubtitles: boolean;
+  title: string;
+  cues: ClipTranscriptCue[];
+  // What the current `cues` actually cover.
+  preparedFor: ClipPreparedFor | null;
+  // What the in-flight `prepJobId` (if any) was launched for — read back when
+  // it completes, since the controls may have moved on by then.
+  preparingFor: ClipPreparedFor | null;
+  prepJobId: string | null;
+}
+
 // One AI-suggested shorts moment from the sermon transcript (heading +
 // rationale + a start/end span in seconds). Mirrors the API's ShortSuggestion.
 export interface ShortSuggestion {
