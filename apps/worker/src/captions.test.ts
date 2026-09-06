@@ -12,6 +12,7 @@ import {
     escapeAssText,
     evenFloor,
     formatAssTime,
+    landscapeCaptionStyle,
     normalizeCaptionText,
     parseVttCues,
     parseVttTimestamp,
@@ -155,6 +156,25 @@ test("buildAssFromVtt with no cues in range still yields a valid header", () => 
     assert.equal(cueCount, 0);
     assert.match(content, /\[Events\]/);
     assert.doesNotMatch(content, /Dialogue:/);
+});
+
+// --- AssStyleOptions (landscape clip support) -------------------------------
+test("buildAssFromVtt default style still emits the original shorts header", () => {
+    const { content } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
+    assert.match(content, /PlayResX: 1080/);
+    assert.match(content, /PlayResY: 1920/);
+    assert.match(content, /Style: Default,Arial,64,/);
+});
+
+test("buildAssFromVtt with landscapeCaptionStyle emits that style's header and stays natural case", () => {
+    const style = landscapeCaptionStyle(1920, 1080);
+    const { content } = buildAssFromVtt(SAMPLE_VTT, 2, 4, style);
+    assert.match(content, /PlayResX: 1920/);
+    assert.match(content, /PlayResY: 1080/);
+    assert.match(content, new RegExp(`Style: Default,Arial,${style.fontSize},`));
+    // Natural case, not uppercased like the shorts style.
+    assert.match(content, /Hello world/);
+    assert.doesNotMatch(content, /HELLO WORLD/);
 });
 
 // --- caption chunking (never exceed 2 lines) --------------------------------

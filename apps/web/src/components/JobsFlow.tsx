@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { cancelJob, getJobs, getResult } from '../api';
+import { cancelJob, getJobs, getResult, getResultArtifact } from '../api';
 import { Job, Result } from '../types';
 
 interface JobsFlowProps {
@@ -222,12 +222,16 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
               const canShorts = isOwnedByCurrentSession
                 && job.status === 'completed'
                 && ((jobKind(job) === 'sermon' && Boolean(job.result?.videoPath)) || isTranscribe);
+              // General clip: no Result-page flow, just a direct download once done.
+              const isClip = jobKind(job) === 'clip';
+              const canDownloadClip = isOwnedByCurrentSession && isClip
+                && job.status === 'completed' && Boolean(job.result?.videoPath);
               const audioProgress = Math.max(0, Math.min(100, job.progress?.audioProgress ?? 0));
               const videoProgress = Math.max(0, Math.min(100, job.progress?.videoProgress ?? 0));
               const transcriptProgress = Math.max(0, Math.min(100, job.progress?.transcriptProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
               const requestedOutputName = getRequestedOutputName(job);
-              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts;
+              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts && !canDownloadClip;
 
               const childShorts = childrenByParent.get(job.jobId) ?? [];
               const shortsDone = childShorts.filter((c) => c.status === 'completed' && Boolean(c.result?.videoPath)).length;
@@ -286,6 +290,16 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                         <button type="button" className="btn" onClick={() => onOpenShorts(job)} disabled={shortsBusy} style={{ minWidth: '88px', background: '#0f766e' }}>
                           {shortsBusy ? 'Opening...' : 'Shorts'}
                         </button>
+                      ) : null}
+                      {canDownloadClip && job.result ? (
+                        <a
+                          className="btn"
+                          href={getResultArtifact(job.result.resultId, 'video')}
+                          download
+                          style={{ minWidth: '88px', background: '#7c3aed', textAlign: 'center' }}
+                        >
+                          Download
+                        </a>
                       ) : null}
                       {noActions ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
                     </div>

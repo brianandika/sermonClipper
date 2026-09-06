@@ -5,11 +5,12 @@ import { Asset } from '../types';
 interface UploadFlowProps {
   onSuccess: (asset: Asset) => void;
   onUploadForShorts: (asset: Asset) => void;
+  onUploadForClip: (asset: Asset) => void;
 }
 
-type UploadIntent = 'clip' | 'shorts';
+type UploadIntent = 'sermon' | 'shorts' | 'generalClip';
 
-export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowProps) {
+export default function UploadFlow({ onSuccess, onUploadForShorts, onUploadForClip }: UploadFlowProps) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [intent, setIntent] = useState<UploadIntent | null>(null);
@@ -24,7 +25,7 @@ export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowP
     }
   };
 
-  // Both buttons share one upload path; only the destination differs.
+  // All three buttons share one upload path; only the destination differs.
   const upload = async (chosen: UploadIntent) => {
     if (!file) return;
 
@@ -39,6 +40,8 @@ export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowP
       const asset = await getAsset(response.assetId);
       if (chosen === 'shorts') {
         onUploadForShorts(asset);
+      } else if (chosen === 'generalClip') {
+        onUploadForClip(asset);
       } else {
         onSuccess(asset);
       }
@@ -73,9 +76,9 @@ export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowP
             type="button"
             className="btn"
             disabled={!file || uploading}
-            onClick={() => upload('clip')}
+            onClick={() => upload('sermon')}
           >
-            {busyLabel('clip') ?? 'Upload for Clipping'}
+            {busyLabel('sermon') ?? 'Upload for Clipping'}
           </button>
           <button
             type="button"
@@ -86,12 +89,23 @@ export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowP
           >
             {busyLabel('shorts') ?? 'Upload for Shorts'}
           </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={!file || uploading}
+            onClick={() => upload('generalClip')}
+            style={{ background: '#7c3aed' }}
+          >
+            {busyLabel('generalClip') ?? 'Upload to Clip'}
+          </button>
         </div>
       </div>
 
       <p style={{ marginTop: '0.75rem', color: '#64748b', fontSize: '0.9rem' }}>
         <strong>Clipping</strong> opens the editor to trim the sermon.{' '}
-        <strong>Shorts</strong> transcribes the video so you can cut 9:16 vertical clips from it.
+        <strong>Shorts</strong> transcribes the video so you can cut 9:16 vertical clips from it.{' '}
+        <strong>Clip a video</strong> trims any video for another use — mid-service playback, an
+        announcement — with optional fades and burned-in subtitles.
       </p>
 
       {error && <p style={{ color: 'red', marginTop: '1rem' }}>{error}</p>}

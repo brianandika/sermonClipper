@@ -7,6 +7,7 @@ import {
     MAX_SHORT_DURATION_SEC,
     QUEUE_NAMES,
     type CreateJobRequest,
+    type JobKind,
     type QueueName,
 } from "@sermon-clipper/shared";
 import { type Prisma } from "@prisma/client";
@@ -90,6 +91,20 @@ function validateShortRange(payload: CreateJobDto) {
     }
 }
 
+// A general clip only needs a positive, ordered range — no length cap (unlike a
+// short) and no multi-segment clip list (unlike a sermon).
+function validateGeneralClipRange(payload: CreateJobDto) {
+    if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
+        throw new BadRequestException("startTime and endTime are required");
+    }
+    if (payload.startTime < 0) {
+        throw new BadRequestException("startTime must be >= 0");
+    }
+    if (payload.startTime >= payload.endTime) {
+        throw new BadRequestException("startTime must be less than endTime");
+    }
+}
+
 @Injectable()
 export class JobsService {
     constructor(
@@ -133,6 +148,23 @@ export class JobsService {
         }
         else if (kind === "short") {
             validateShortRange(payload);
+        }
+        else if (kind === "clip") {
+            validateGeneralClipRange(payload);
+
+            // Burned-in subtitles are blocking for this kind: the transcript must
+            // already exist (and have been reviewed) before we render.
+            if (payload.captions === true) {
+                const asset = await this.prisma.asset.findFirst({
+                    where: { id: assetId, sessionId },
+                    select: { transcriptPath: true },
+                });
+                if (!asset?.transcriptPath) {
+                    throw new BadRequestException(
+                        "Burning in subtitles requires a transcript. Prepare and review the transcript first.",
+                    );
+                }
+            }
         }
         // transcribeSource has no clip range to validate.
 
@@ -247,14 +279,14 @@ export class JobsService {
         });
     }
 
-    // All "short" jobs for a given source asset (session-scoped), newest first —
-    // the persisted "saved shorts" for that source.
-    async listShortsForAsset(sessionId: string, assetId: string) {
+    // All jobs of a given kind for a source asset (session-scoped), newest
+    // first — the persisted "saved shorts"/"saved clips" for that source.
+    async listJobsForAssetByKind(sessionId: string, assetId: string, kind: JobKind) {
         return this.prisma.job.findMany({
             where: {
                 sessionId,
                 assetId,
-                payloadJson: { path: ["kind"], equals: "short" },
+                payloadJson: { path: ["kind"], equals: kind },
             },
             include: {
                 progress: true,
@@ -264,6 +296,10 @@ export class JobsService {
                 createdAt: "desc",
             },
         });
+    }
+
+    async listShortsForAsset(sessionId: string, assetId: string) {
+        return this.listJobsForAssetByKind(sessionId, assetId, "short");
     }
 
     async cancelOwnedJob(sessionId: string, jobId: string) {

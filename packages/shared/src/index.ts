@@ -108,9 +108,15 @@ export interface SuggestShortsResponse {
     suggestions: ShortSuggestion[];
 }
 
-// Discriminates the three worker pipelines. Absent ⇒ "sermon" (the original
+// Discriminates the worker pipelines. Absent ⇒ "sermon" (the original
 // landscape trim/cut flow), preserving backward compatibility with existing jobs.
-export type JobKind = "sermon" | "transcribeSource" | "short";
+export type JobKind = "sermon" | "transcribeSource" | "short" | "clip";
+
+// Seconds of fade-to-black requested at each end of a general clip when `fade`
+// is on. The actual applied fade is clamped per edge by how much real source
+// footage exists before startTime / after endTime — see
+// apps/worker/src/clip-filters.ts.
+export const CLIP_FADE_SECONDS = 3;
 
 export interface CreateJobRequest {
     kind?: JobKind;
@@ -132,6 +138,9 @@ export interface CreateJobRequest {
     cropX?: number;
     cropY?: number;
     zoom?: number;
+    // "short": burn captions unless explicitly false (best-effort — degrades to
+    // no captions). "clip": burn captions only when explicitly true, and the API
+    // rejects the job if the asset has no transcript.
     captions?: boolean;
     // "short" only: append the church end card (a branded 9:16 image) after the
     // clip, with a quick crossfade into it and a 3s hold. Default true.
@@ -143,6 +152,12 @@ export interface CreateJobRequest {
     // "sermon" only: when true (the default), the worker delivers the finished VTT
     // transcript to the configured SermonGuide inbox. Users can opt out per job.
     deliverTranscript?: boolean;
+    // "clip" only: extend the output by up to CLIP_FADE_SECONDS on each end,
+    // pulling in adjacent source footage and fading it from/to black. The
+    // marked [startTime, endTime] itself is never dimmed or shortened. Default
+    // false. Each side is independently clamped to whatever real footage
+    // exists before startTime / after endTime.
+    fade?: boolean;
 }
 
 export interface JobResponse {

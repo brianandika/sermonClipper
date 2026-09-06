@@ -152,6 +152,27 @@ export const getShortsForAsset = async (assetId: string): Promise<Job[]> => {
   return data;
 };
 
+// Create one general-purpose clip (source aspect ratio preserved) with optional
+// fade-to-black at both ends and optional burned-in subtitles.
+export const createClipJob = async (params: {
+  assetId: string;
+  startTime: number;
+  endTime: number;
+  fade: boolean;
+  captions: boolean;
+  title?: string;
+  outputVideoFilename?: string;
+}): Promise<Job> => {
+  const { data } = await api.post('/jobs', { kind: 'clip', ...params });
+  return data;
+};
+
+// All persisted general clips for a source asset (newest first).
+export const getClipsForAsset = async (assetId: string): Promise<Job[]> => {
+  const { data } = await api.get(`/jobs/clips/${assetId}`);
+  return data;
+};
+
 export const getHardwareCapabilities = async (): Promise<HardwareCapabilitiesResponse> => {
   const { data } = await api.get('/jobs/hardware');
   return data;

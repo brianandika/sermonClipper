@@ -19,7 +19,7 @@ export interface Asset {
   updatedAt: string;
 }
 
-export type JobKind = 'sermon' | 'transcribeSource' | 'short';
+export type JobKind = 'sermon' | 'transcribeSource' | 'short' | 'clip';
 
 export interface Clip {
   id?: string;
@@ -74,6 +74,7 @@ export interface Job {
     endCard?: boolean;
     title?: string;
     parentJobId?: string;
+    fade?: boolean;
   };
   failureReason: string | null;
   createdAt: string;

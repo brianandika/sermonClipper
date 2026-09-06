@@ -62,6 +62,17 @@ export class JobsController {
         return jobs.map((job) => this.jobsService.toResponse(job));
     }
 
+    @Get("clips/:assetId")
+    async listClipsForAsset(
+        @Req() request: Request,
+        @Param("assetId") assetId: string,
+    ): Promise<JobResponse[]> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        await this.assetsService.getOwnedAsset(session.id, assetId);
+        const jobs = await this.jobsService.listJobsForAssetByKind(session.id, assetId, "clip");
+        return jobs.map((job) => this.jobsService.toResponse(job));
+    }
+
     @Get(":jobId")
     async getJob(
         @Req() request: Request,

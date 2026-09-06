@@ -6,7 +6,7 @@
         "build": "tsc -p tsconfig.json",
         "start": "node dist/apps/worker/src/main.js",
         "start:dev": "ts-node-dev --respawn --transpile-only src/main.ts",
-        "test": "tsx src/captions.test.ts",
+        "test": "tsx src/captions.test.ts && tsx src/clip-filters.test.ts",
         "lint": "tsc -p tsconfig.json --noEmit"
     },
     "dependencies": {

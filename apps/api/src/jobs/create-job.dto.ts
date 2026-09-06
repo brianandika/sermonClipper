@@ -15,7 +15,7 @@ import {
 } from "class-validator";
 import { HardwareOption, type JobKind } from "@sermon-clipper/shared";
 
-const JOB_KINDS: JobKind[] = ["sermon", "transcribeSource", "short"];
+const JOB_KINDS: JobKind[] = ["sermon", "transcribeSource", "short", "clip"];
 
 export class CreateJobDto {
     @IsString()
@@ -132,4 +132,9 @@ export class CreateJobDto {
     @IsOptional()
     @IsBoolean()
     deliverTranscript?: boolean;
+
+    // "clip" only: 3s fade to/from black at each end.
+    @IsOptional()
+    @IsBoolean()
+    fade?: boolean;
 }

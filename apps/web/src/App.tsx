@@ -3,12 +3,13 @@ import { bootstrapSession, createShortsSourceFromJob, createTranscribeJob, getAs
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
 import ShortsFlow from './components/ShortsFlow';
+import ClipFlow from './components/ClipFlow';
 import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
 import TranscribeResultsFlow from './components/TranscribeResultsFlow';
 import { Asset, Job, Result, Session } from './types';
 
-type AppFlow = 'upload' | 'editor' | 'shorts' | 'jobs' | 'results';
+type AppFlow = 'upload' | 'editor' | 'shorts' | 'clip' | 'jobs' | 'results';
 
 interface NavItem {
   key: AppFlow;
@@ -31,6 +32,10 @@ function App() {
   // job (reuse path) or the transcribe job (standalone-upload-for-shorts path).
   const [shortsParentJobId, setShortsParentJobId] = useState<string | null>(null);
   const [shortsBusy, setShortsBusy] = useState(false);
+  // Clip source + in-flight transcription, lifted for the same reason as the
+  // Shorts state above.
+  const [clipSource, setClipSource] = useState<Asset | null>(null);
+  const [clipPrepJobId, setClipPrepJobId] = useState<string | null>(null);
   // Asset backing a transcribe-only "View Result" page (no Result row exists for
   // transcribeSource jobs — the video + transcript come straight from the asset).
   const [transcribeAsset, setTranscribeAsset] = useState<Asset | null>(null);
@@ -74,6 +79,15 @@ function App() {
     } catch (err) {
       setError(`Could not start transcription: ${err}`);
     }
+  };
+
+  // "Upload to Clip": land directly on the Clip tab. Unlike Shorts, no job is
+  // queued yet — whether a transcript is needed isn't known until the user
+  // checks "Burn in subtitles".
+  const handleUploadForClip = (uploadedAsset: Asset) => {
+    setClipSource(uploadedAsset);
+    setClipPrepJobId(null);
+    setFlow('clip');
   };
 
   // Open a transcribe-only job's result page: the uploaded video + its transcript
@@ -153,6 +167,8 @@ function App() {
     setShortsSource(null);
     setShortsPrepJobId(null);
     setShortsParentJobId(null);
+    setClipSource(null);
+    setClipPrepJobId(null);
     setTranscribeAsset(null);
     setFlow('upload');
   };
@@ -186,6 +202,12 @@ function App() {
       description: shortsSource ? 'Make 9:16 vertical clips' : 'Open from a job or result',
       disabled: !shortsSource,
     },
+    {
+      key: 'clip',
+      label: 'Clip',
+      description: clipSource ? 'Trim any video' : 'Upload a video to clip',
+      disabled: !clipSource,
+    },
   ];
 
   const pendingFlowLabel = navItems.find((item) => item.key === pendingFlow)?.label ?? 'another page';
@@ -200,6 +222,11 @@ function App() {
     // Shorts is only reachable via a job's "Shorts" action or a result page's
     // "Open Shorts" — never by clicking the tab with no source.
     if (nextFlow === 'shorts' && !shortsSource) {
+      return;
+    }
+    // Clip is only reachable via "Upload to Clip" — never by clicking the tab
+    // with no source.
+    if (nextFlow === 'clip' && !clipSource) {
       return;
     }
     setFlow(nextFlow);
@@ -283,7 +310,13 @@ function App() {
           </nav>
         </header>
 
-        {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} onUploadForShorts={handleUploadForShorts} />}
+        {flow === 'upload' && (
+          <UploadFlow
+            onSuccess={handleUploadSuccess}
+            onUploadForShorts={handleUploadForShorts}
+            onUploadForClip={handleUploadForClip}
+          />
+        )}
         {flow === 'editor' && asset && (
           <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleEditorCancel} />
         )}
@@ -294,6 +327,14 @@ function App() {
             prepJobId={shortsPrepJobId}
             onPrepJobId={setShortsPrepJobId}
             parentJobId={shortsParentJobId}
+          />
+        )}
+        {flow === 'clip' && clipSource && (
+          <ClipFlow
+            source={clipSource}
+            onSourceChange={setClipSource}
+            prepJobId={clipPrepJobId}
+            onPrepJobId={setClipPrepJobId}
           />
         )}
         {flow === 'jobs' && (
