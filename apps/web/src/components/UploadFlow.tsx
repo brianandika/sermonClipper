@@ -96,7 +96,7 @@ export default function UploadFlow({ onSuccess, onUploadForShorts, onUploadForCl
             onClick={() => upload('generalClip')}
             style={{ background: '#7c3aed' }}
           >
-            {busyLabel('generalClip') ?? 'Upload to Clip'}
+            {busyLabel('generalClip') ?? 'Clip other'}
           </button>
         </div>
       </div>
@@ -104,7 +104,7 @@ export default function UploadFlow({ onSuccess, onUploadForShorts, onUploadForCl
       <p style={{ marginTop: '0.75rem', color: '#64748b', fontSize: '0.9rem' }}>
         <strong>Clipping</strong> opens the editor to trim the sermon.{' '}
         <strong>Shorts</strong> transcribes the video so you can cut 9:16 vertical clips from it.{' '}
-        <strong>Clip a video</strong> trims any video for another use — mid-service playback, an
+        <strong>Clip other</strong> trims any other video for another use — mid-service playback, an
         announcement — with optional fades and burned-in subtitles.
       </p>
 

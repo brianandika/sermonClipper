@@ -182,6 +182,11 @@ export const createClipJob = async (params: {
   assetId: string;
   startTime: number;
   endTime: number;
+  // Gaps to cut out of [startTime, endTime] ("Clips to Cut") — same
+  // semantics as the sermon editor's clipStarts/clipEnds: the kept output is
+  // everything between them, concatenated.
+  clipStarts?: number[];
+  clipEnds?: number[];
   fade: boolean;
   captions: boolean;
   captionsVtt?: string;

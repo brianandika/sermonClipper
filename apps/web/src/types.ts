@@ -126,6 +126,13 @@ export interface ClipPreparedFor {
   end: number;
 }
 
+// A gap to cut out of [start, end] — the kept output is everything between
+// the cut gaps, concatenated. Mirrors EditorFlow's ClipRange/"Clips to Cut".
+export interface ClipCutGap {
+  start: number;
+  end: number;
+}
+
 // All of ClipFlow's per-source state, lifted to App so switching tabs (which
 // unmounts ClipFlow) never loses the user's trim points, toggles, or an
 // in-flight/prepared transcript — the same reason Shorts' state is lifted,
@@ -137,6 +144,11 @@ export interface ClipDraft {
   fade: boolean;
   burnSubtitles: boolean;
   title: string;
+  // Gaps to cut out of [start, end] ("Clips to Cut"). Adding/editing these
+  // never invalidates a prepared transcript — the transcript always covers
+  // the full, uncut [start, end]; the worker drops/re-times cues around the
+  // cuts per-segment at burn time (see processGeneralClipJob).
+  gaps: ClipCutGap[];
   cues: ClipTranscriptCue[];
   // What the current `cues` actually cover.
   preparedFor: ClipPreparedFor | null;

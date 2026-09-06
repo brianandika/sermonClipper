@@ -16,6 +16,7 @@ function createClipDraft(source: Asset): ClipDraft {
     fade: false,
     burnSubtitles: false,
     title: '',
+    gaps: [],
     cues: [],
     preparedFor: null,
     preparingFor: null,

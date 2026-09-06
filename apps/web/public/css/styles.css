@@ -1160,6 +1160,7 @@ video, audio {
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   padding: 1rem;
+  margin-top: 1.25rem;
   margin-bottom: 1.25rem;
   background: #f8fafc;
 }

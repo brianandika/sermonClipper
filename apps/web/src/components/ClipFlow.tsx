@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Asset, ClipDraft, ClipPreparedFor, ClipTranscriptCue, Job } from '../types';
+import { Asset, ClipCutGap, ClipDraft, ClipPreparedFor, ClipTranscriptCue, Job } from '../types';
 import {
   createClipJob,
   createClipTranscribeJob,
@@ -126,6 +126,42 @@ function rangeError(start: number, end: number, duration: number): string | null
   return null;
 }
 
+function parseTimeValue(raw: string): number {
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// "Clips to Cut" — gaps to remove from within [start, end]. Same rules as
+// EditorFlow's own clip-gap validation: ordered, non-overlapping, and inside
+// the marked selection. A blank (0,0) placeholder row (before the user has
+// set it) is ignored, matching EditorFlow's own toCutRanges/validateEditorState.
+function gapsError(gaps: ClipCutGap[], start: number, end: number): string | null {
+  const sorted = [...gaps]
+    .filter((gap) => gap.start > 0 || gap.end > 0)
+    .sort((a, b) => a.start - b.start);
+
+  let previousEnd = start;
+  for (const [index, gap] of sorted.entries()) {
+    if (!Number.isFinite(gap.start) || !Number.isFinite(gap.end)) return `Clip ${index + 1} has invalid numeric values.`;
+    if (gap.start >= gap.end) return `Clip ${index + 1} start time must be less than end time.`;
+    if (gap.start < start || gap.end > end) return `Clip ${index + 1} must be inside the start/end range.`;
+    if (gap.start < previousEnd) return `Clip ${index + 1} overlaps a previous clip.`;
+    previousEnd = gap.end;
+  }
+  return null;
+}
+
+// The wire format for clipStarts/clipEnds: sorted, blank rows dropped, 3dp.
+function sortedGapRanges(gaps: ClipCutGap[]): { starts: number[]; ends: number[] } {
+  const sorted = [...gaps]
+    .filter((gap) => gap.start > 0 || gap.end > 0)
+    .sort((a, b) => a.start - b.start);
+  return {
+    starts: sorted.map((gap) => Number(gap.start.toFixed(3))),
+    ends: sorted.map((gap) => Number(gap.end.toFixed(3))),
+  };
+}
+
 export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const cueRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -136,7 +172,7 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
   // this component — never loses it. Only purely ephemeral UI feedback
   // (player position, in-flight status text, this-render-only errors) stays
   // local below.
-  const { start, end, fade, burnSubtitles, title, cues, preparedFor, preparingFor, prepJobId } = draft;
+  const { start, end, fade, burnSubtitles, title, gaps, cues, preparedFor, preparingFor, prepJobId } = draft;
 
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(sourceDuration);
@@ -147,6 +183,11 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
   // Export
   const [exporting, setExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState('');
+  // The clip pipeline's own single ffmpeg encode reports through
+  // progress.videoProgress (5→100); overallProgress stays a flat 15% the
+  // whole encode, so it's useless as a bar — same reason ShortsFlow uses
+  // videoProgress for its own export progress bar.
+  const [exportProgress, setExportProgress] = useState<number | undefined>(undefined);
   const [exportError, setExportError] = useState<string | null>(null);
   const [savedClips, setSavedClips] = useState<Job[]>([]);
 
@@ -258,6 +299,32 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
     if (videoRef.current) videoRef.current.currentTime = clampTime(seconds);
   };
 
+  // ---- "Clips to Cut" handlers -----------------------------------------
+  const addGap = () => {
+    onDraftChange({ gaps: [...gaps, { start: 0, end: 0 }] });
+  };
+
+  const removeGap = (index: number) => {
+    onDraftChange({ gaps: gaps.filter((_, i) => i !== index) });
+  };
+
+  const updateGapField = (index: number, field: 'start' | 'end', value: string) => {
+    const parsed = parseTimeValue(value);
+    onDraftChange({ gaps: gaps.map((gap, i) => (i === index ? { ...gap, [field]: parsed } : gap)) });
+  };
+
+  const setGapBoundToCurrent = (index: number, field: 'start' | 'end') => {
+    const video = videoRef.current;
+    if (!video) return;
+    const value = Number(clampTime(video.currentTime).toFixed(3));
+    onDraftChange({ gaps: gaps.map((gap, i) => (i === index ? { ...gap, [field]: value } : gap)) });
+  };
+
+  const jumpToGap = (index: number, field: 'start' | 'end') => {
+    const gap = gaps[index];
+    if (gap) jumpTo(field === 'start' ? gap.start : gap.end);
+  };
+
   // ---- Transcript handlers ----------------------------------------------
   const startTranscription = async () => {
     setPrepError(null);
@@ -281,7 +348,7 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
   };
 
   // ---- Export --------------------------------------------------------------
-  const validationError = rangeError(start, end, duration);
+  const validationError = rangeError(start, end, duration) ?? gapsError(gaps, start, end);
   const subtitlesBlocked = burnSubtitles && (cues.length === 0 || isStale);
   const exportDisabled = exporting || Boolean(validationError) || subtitlesBlocked;
 
@@ -290,11 +357,15 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
     setExporting(true);
     setExportError(null);
     setExportMessage('Queued…');
+    setExportProgress(undefined);
     try {
+      const { starts: clipStarts, ends: clipEnds } = sortedGapRanges(gaps);
       const job = await createClipJob({
         assetId: source.assetId,
         startTime: start,
         endTime: end,
+        clipStarts: clipStarts.length > 0 ? clipStarts : undefined,
+        clipEnds: clipEnds.length > 0 ? clipEnds : undefined,
         fade,
         captions: burnSubtitles,
         captionsVtt: burnSubtitles ? cuesToVtt(cues) : undefined,
@@ -306,6 +377,7 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
       for (let attempt = 0; attempt < 1200; attempt += 1) {
         const current = await getJob(job.jobId);
         if (current.progress?.message) setExportMessage(current.progress.message);
+        if (current.progress) setExportProgress(current.progress.videoProgress);
         if (TERMINAL_STATUSES.includes(current.status)) {
           finished = current;
           break;
@@ -319,6 +391,7 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
 
       setSavedClips((prev) => [finished as Job, ...prev]);
       setExportMessage('');
+      setExportProgress(undefined);
     } catch (err) {
       setExportError(describeError(err));
     } finally {
@@ -388,6 +461,46 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
 
           {validationError && <p className="shorts-error">{validationError}</p>}
 
+          <div id="clips" className="grid" style={{ width: '100%', marginBottom: '1rem' }}>
+            <label>Clips to Cut:</label>
+            {gaps.length === 0 ? (
+              <div className="clip" />
+            ) : (
+              gaps.map((gap, idx) => (
+                <div key={`gap-${idx}`} className="clip flex centered" style={{ flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    value={gap.start.toFixed(3)}
+                    placeholder="Start Time"
+                    onChange={(event) => updateGapField(idx, 'start', event.target.value)}
+                  />
+                  <button type="button" className="btn set-clip-start" onClick={() => setGapBoundToCurrent(idx, 'start')}>Set</button>
+                  <button type="button" className="btn jump-to-clip-start" onClick={() => jumpToGap(idx, 'start')}>Jump</button>
+                  <input
+                    type="text"
+                    value={gap.end.toFixed(3)}
+                    placeholder="End Time"
+                    onChange={(event) => updateGapField(idx, 'end', event.target.value)}
+                  />
+                  <button type="button" className="btn set-clip-end" onClick={() => setGapBoundToCurrent(idx, 'end')}>Set</button>
+                  <button type="button" className="btn jump-to-clip-end" onClick={() => jumpToGap(idx, 'end')}>Jump</button>
+                  <button type="button" className="btn remove-clip" aria-label="Remove clip" onClick={() => removeGap(idx)}>
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          <button type="button" className="btn add-clip" onClick={addGap} style={{ marginBottom: '1rem' }}>
+            Add Another Clip
+          </button>
+          <p className="shorts-hint">
+            Cuts out unwanted sections from within your selection — the parts on either side are kept and joined
+            together. The transcript automatically follows: lines inside a cut are dropped, and later lines shift
+            earlier to match.
+          </p>
+
           <label>
             Title (optional)
             <input
@@ -453,6 +566,30 @@ export default function ClipFlow({ source, draft, onDraftChange }: ClipFlowProps
           <button type="button" className="btn results-download-btn" disabled={exportDisabled} onClick={runExport}>
             {exporting ? (exportMessage || 'Exporting…') : 'Export clip'}
           </button>
+
+          {exporting && (
+            <div className="shorts-progress">
+              <div
+                className="progress-bar"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={typeof exportProgress === 'number' ? Math.round(exportProgress) : undefined}
+              >
+                {typeof exportProgress === 'number' && exportProgress > 0 ? (
+                  <div className="progress" style={{ width: `${Math.max(4, Math.min(100, exportProgress))}%` }} />
+                ) : (
+                  <div className="progress" style={{ width: '100%' }}>
+                    <div className="loading-animation" />
+                  </div>
+                )}
+              </div>
+              <p className="results-pending-copy">
+                {exportMessage || 'Processing…'}
+                {typeof exportProgress === 'number' && exportProgress > 0 ? ` (${Math.round(exportProgress)}%)` : ''}
+              </p>
+            </div>
+          )}
         </section>
 
         <section className="shorts-transcript-col">

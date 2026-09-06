@@ -26,11 +26,11 @@ function normalizeResultPath(path: string | null) {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-function validateClipRanges(payload: CreateJobDto) {
-    if (payload.startTime >= payload.endTime) {
-        throw new BadRequestException("startTime must be less than endTime");
-    }
-
+// Shared by "sermon" and "clip": clipStarts/clipEnds describe GAPS to cut out
+// of [startTime, endTime] — the kept output is everything between them,
+// concatenated (see the worker's getSegments). Both arrays must be provided
+// together, equal length, ordered, non-overlapping, and inside the range.
+function validateClipGaps(payload: Pick<CreateJobDto, "startTime" | "endTime" | "clipStarts" | "clipEnds">) {
     const hasClipStarts = Boolean(payload.clipStarts?.length);
     const hasClipEnds = Boolean(payload.clipEnds?.length);
 
@@ -65,6 +65,14 @@ function validateClipRanges(payload: CreateJobDto) {
 
         previousClipEnd = clipEnd;
     }
+}
+
+function validateClipRanges(payload: CreateJobDto) {
+    if (payload.startTime >= payload.endTime) {
+        throw new BadRequestException("startTime must be less than endTime");
+    }
+
+    validateClipGaps(payload);
 
     if (payload.introDuration !== undefined && payload.introDuration <= 0) {
         throw new BadRequestException("introDuration must be greater than 0 when provided");
@@ -91,8 +99,9 @@ function validateShortRange(payload: CreateJobDto) {
     }
 }
 
-// A general clip only needs a positive, ordered range — no length cap (unlike a
-// short) and no multi-segment clip list (unlike a sermon).
+// A general clip needs a positive, ordered range — no length cap (unlike a
+// short) — and may optionally cut gaps out of it, same rules as a sermon
+// (see validateClipGaps), just without the intro/transition checks.
 function validateGeneralClipRange(payload: CreateJobDto) {
     if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
         throw new BadRequestException("startTime and endTime are required");
@@ -103,6 +112,7 @@ function validateGeneralClipRange(payload: CreateJobDto) {
     if (payload.startTime >= payload.endTime) {
         throw new BadRequestException("startTime must be less than endTime");
     }
+    validateClipGaps(payload);
 }
 
 // transcribeSource's startTime/endTime are optional (absent = transcribe the

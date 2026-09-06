@@ -19,8 +19,8 @@ function test(name: string, fn: () => void) {
 
 // --- resolveClipWindow (the load-bearing one) -------------------------------
 
-test("resolveClipWindow: fade off returns the marked window untouched, regardless of sourceDuration", () => {
-    const window = resolveClipWindow(10, 40, 600, false, 3);
+test("resolveClipWindow: fade off (both sides) returns the marked window untouched, regardless of sourceDuration", () => {
+    const window = resolveClipWindow(10, 40, 600, false, false, 3);
     assert.deepEqual(window, {
         effectiveStart: 10,
         effectiveEnd: 40,
@@ -30,7 +30,7 @@ test("resolveClipWindow: fade off returns the marked window untouched, regardles
 });
 
 test("resolveClipWindow: plenty of room on both sides widens by the full fade on each side", () => {
-    const window = resolveClipWindow(10, 40, 600, true, 3);
+    const window = resolveClipWindow(10, 40, 600, true, true, 3);
     assert.equal(window.effectiveStart, 7);
     assert.equal(window.effectiveEnd, 43);
     assert.equal(window.fadeInSeconds, 3);
@@ -41,19 +41,19 @@ test("resolveClipWindow: plenty of room on both sides widens by the full fade on
 });
 
 test("resolveClipWindow: clamps fade-in when startTime is close to the source's beginning", () => {
-    const window = resolveClipWindow(1.2, 40, 600, true, 3);
+    const window = resolveClipWindow(1.2, 40, 600, true, true, 3);
     assert.equal(window.fadeInSeconds, 1.2);
     assert.equal(window.effectiveStart, 0);
 });
 
 test("resolveClipWindow: clamps fade-out when endTime is close to the source's end", () => {
-    const window = resolveClipWindow(10, 599, 600, true, 3);
+    const window = resolveClipWindow(10, 599, 600, true, true, 3);
     assert.equal(window.fadeOutSeconds, 1);
     assert.equal(window.effectiveEnd, 600);
 });
 
 test("resolveClipWindow: marked selection spans the entire source yields zero fade on both ends", () => {
-    const window = resolveClipWindow(0, 600, 600, true, 3);
+    const window = resolveClipWindow(0, 600, 600, true, true, 3);
     assert.equal(window.fadeInSeconds, 0);
     assert.equal(window.fadeOutSeconds, 0);
     assert.equal(window.effectiveStart, 0);
@@ -61,8 +61,24 @@ test("resolveClipWindow: marked selection spans the entire source yields zero fa
 });
 
 test("resolveClipWindow: non-finite sourceDuration falls back to the full requested fade rather than clamping to 0", () => {
-    const window = resolveClipWindow(10, 40, Number.NaN, true, 3);
+    const window = resolveClipWindow(10, 40, Number.NaN, true, true, 3);
     assert.equal(window.fadeOutSeconds, 3);
+    assert.equal(window.effectiveEnd, 43);
+});
+
+test("resolveClipWindow: fade-in only (multi-segment interior/last segment never fades in)", () => {
+    const window = resolveClipWindow(10, 40, 600, true, false, 3);
+    assert.equal(window.fadeInSeconds, 3);
+    assert.equal(window.fadeOutSeconds, 0);
+    assert.equal(window.effectiveStart, 7);
+    assert.equal(window.effectiveEnd, 40);
+});
+
+test("resolveClipWindow: fade-out only (multi-segment first/interior segment never fades out)", () => {
+    const window = resolveClipWindow(10, 40, 600, false, true, 3);
+    assert.equal(window.fadeInSeconds, 0);
+    assert.equal(window.fadeOutSeconds, 3);
+    assert.equal(window.effectiveStart, 10);
     assert.equal(window.effectiveEnd, 43);
 });
 

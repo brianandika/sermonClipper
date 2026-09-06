@@ -26,6 +26,13 @@ export interface ClipWindow {
 // the very last frame of the source gets no fade-out at all. sourceDuration
 // should come from a fresh ffprobe of the source file (see main.ts), not a
 // possibly-stale Asset.duration column.
+//
+// fadeInRequested/fadeOutRequested are independent so a multi-segment clip
+// (cut gaps removed) can fade-in only its FIRST segment and fade-out only its
+// LAST one — segments in between never fade, regardless of the fade toggle.
+// A single-segment clip (no gaps) passes the same boolean for both, which is
+// exactly the original symmetric behavior.
+//
 // fadeSeconds is the caller-supplied requested length (the worker passes
 // CLIP_FADE_SECONDS from @sermon-clipper/shared — this module intentionally
 // takes it as a plain argument rather than importing shared, so it stays a
@@ -34,16 +41,18 @@ export function resolveClipWindow(
     startTime: number,
     endTime: number,
     sourceDuration: number,
-    fadeRequested: boolean,
+    fadeInRequested: boolean,
+    fadeOutRequested: boolean,
     fadeSeconds: number,
 ): ClipWindow {
-    if (!fadeRequested || !(fadeSeconds > 0)) {
-        return { effectiveStart: startTime, effectiveEnd: endTime, fadeInSeconds: 0, fadeOutSeconds: 0 };
-    }
+    const fadeInSeconds = fadeInRequested && fadeSeconds > 0
+        ? Math.max(0, Math.min(fadeSeconds, startTime))
+        : 0;
 
-    const fadeInSeconds = Math.max(0, Math.min(fadeSeconds, startTime));
     const availableAfter = Number.isFinite(sourceDuration) ? Math.max(0, sourceDuration - endTime) : fadeSeconds;
-    const fadeOutSeconds = Math.max(0, Math.min(fadeSeconds, availableAfter));
+    const fadeOutSeconds = fadeOutRequested && fadeSeconds > 0
+        ? Math.max(0, Math.min(fadeSeconds, availableAfter))
+        : 0;
 
     return {
         effectiveStart: startTime - fadeInSeconds,

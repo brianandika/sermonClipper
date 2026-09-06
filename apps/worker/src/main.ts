@@ -2172,6 +2172,28 @@ async function processShortJob(payload: ClipProcessJobData) {
 // source's own resolution and aspect ratio, optionally burn standard subtitles
 // from the (already reviewed) asset transcript, and optionally fade to and from
 // black at both ends. One MP4, no MP3, no end card, no SermonGuide delivery.
+// clip: the general-purpose pipeline. Trim [startTime, endTime] keeping the
+// source's own resolution and aspect ratio, optionally cut gaps out of that
+// selection (clipStarts/clipEnds — see getSegments), optionally burn standard
+// subtitles from the (already reviewed) captionsVtt, and optionally fade to
+// and from black at both ends. One MP4, no MP3, no end card, no SermonGuide
+// delivery.
+//
+// Multi-segment (gaps present) works exactly like the sermon pipeline's own
+// multi-segment concat: each KEPT segment (from getSegments) becomes its own
+// ffmpeg -i of the same source, individually filtered (captions burned + fade
+// applied, only where relevant — see below), then joined with the `concat`
+// filter (not the demuxer — this lets each segment carry its own
+// filter_complex chain). A single segment (the common, no-gaps case) is just
+// the n=1 case of the exact same code path — no separate fast path to keep in
+// sync.
+//
+// Only the FIRST segment ever fades in, and only the LAST ever fades out —
+// interior segments (between two gaps) always play straight through
+// unfaded, matching how a real edit would only bookend the very start/end of
+// the finished piece, not every cut. When there's only one segment, first ===
+// last, so both sides apply — identical to the original single-segment
+// behavior.
 async function processGeneralClipJob(payload: ClipProcessJobData) {
     await assertJobNotCanceled(payload.jobId);
     startJobCancellationWatcher(payload.jobId);
@@ -2193,9 +2215,13 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             throw new Error("A clip requires a positive [startTime, endTime] range");
         }
 
+        const segments = getSegments(request);
+        if (segments.length === 0) {
+            throw new Error("A clip requires at least one segment after removing the cut gaps");
+        }
+
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
         const jobRoot = getJobRoot(job.sessionId, job.id);
-        const assFilePath = join(jobRoot, "captions.ass");
         const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "clip-video");
         const outputVideoPath = join(jobRoot, outputVideoFilename);
 
@@ -2212,68 +2238,81 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
 
         const media = await detectMediaProperties(job.id, job.asset.sourcePath);
 
-        // Resolve the clip window before anything else touches start/end times.
         // Probe the source's real duration fresh (don't trust a possibly-stale
         // Asset.duration column) — detectOutputDuration is a generic
         // ffprobe-duration helper despite its name, and works identically
-        // against any media path, not just a job's own output.
+        // against any media path, not just a job's own output. Shared by every
+        // segment's own fade-out clamp.
         const sourceDuration = (await detectOutputDuration(job.id, job.asset.sourcePath))
             ?? job.asset.duration
             ?? request.endTime;
 
-        const window = resolveClipWindow(
-            request.startTime,
-            request.endTime,
-            sourceDuration,
-            request.fade === true,
-            CLIP_FADE_SECONDS,
-        );
-        const effectiveDuration = window.effectiveEnd - window.effectiveStart;
-        const fadeNote = request.fade === true && window.fadeInSeconds === 0 && window.fadeOutSeconds === 0
-            ? "fade skipped: not enough surrounding footage"
-            : "";
+        const wantFade = request.fade === true;
+        const wantCaptions = request.captions === true;
 
-        // Captions: unlike "short", this is blocking — the API already rejects
-        // the job unless a reviewed transcript for this exact clip was
-        // attached to the request, so any miss here is a hard failure, not a
-        // silent degrade. request.captionsVtt was produced by a scoped
-        // transcribeSource job given this SAME startTime/endTime, and is
-        // 0-based relative to startTime (NOT window.effectiveStart — see
-        // processTranscribeSourceJob's comment). In THIS (possibly
-        // fade-padded) output, the marked selection's own content doesn't
-        // begin at t=0 — it begins at t=window.fadeInSeconds, once the head
-        // pad plays. buildAssFromVtt's clipStart parameter is subtracted from
-        // each cue's time, so passing -window.fadeInSeconds shifts every cue
-        // forward by exactly that amount, lining them back up with the
-        // padded output regardless of what `fade` was when the transcript
-        // was prepared (toggling fade after preparing never requires
-        // re-transcribing — only re-burning, which always happens anyway).
-        let captionsApplied = false;
-        if (request.captions === true) {
+        if (wantCaptions) {
             if (!(await canBurnCaptions())) {
                 throw new Error("Cannot burn in subtitles: this worker's FFmpeg has no libass support");
             }
             if (!request.captionsVtt?.trim()) {
                 throw new Error("Cannot burn in subtitles: no reviewed transcript was provided with this job");
             }
-            const ass = buildAssFromVtt(
-                request.captionsVtt,
-                -window.fadeInSeconds,
-                markedDuration,
-                landscapeCaptionStyle(media.width, media.height),
-            );
-            if (ass.cueCount === 0) {
-                throw new Error("Cannot burn in subtitles: the transcript has no lines in this range");
-            }
-            await writeFile(assFilePath, ass.content);
-            captionsApplied = true;
         }
 
-        const videoFilter = buildClipVideoFilter({
-            window,
-            assFilePath: captionsApplied ? assFilePath : undefined,
+        // Resolve each segment's own (possibly fade-widened) window, and — if
+        // captions are on — its own slice of the transcript, sliced/rebased in
+        // the TRANSCRIPT's coordinate system (0-based from request.startTime,
+        // since captionsVtt was produced by a scoped transcribeSource job
+        // given this same startTime/endTime — see that job's own comment) and
+        // written to its own .ass file so it can be burned into that segment's
+        // own individually-encoded stream. Only the first segment's clipStart
+        // shifts by -fadeInSeconds, for the same reason the single-segment
+        // design did: its own video read starts that much earlier once padded,
+        // and buildAssFromVtt's clipStart is subtracted from every cue's time.
+        const assFilePaths: (string | undefined)[] = [];
+        const windows = segments.map((segment, index) => {
+            const isFirst = index === 0;
+            const isLast = index === segments.length - 1;
+            return resolveClipWindow(
+                segment.startTime,
+                segment.endTime,
+                sourceDuration,
+                wantFade && isFirst,
+                wantFade && isLast,
+                CLIP_FADE_SECONDS,
+            );
         });
-        const audioFilter = media.hasAudio ? buildClipAudioFilter(window) : null;
+
+        let totalCueCount = 0;
+        if (wantCaptions) {
+            const style = landscapeCaptionStyle(media.width, media.height);
+            for (const [index, segment] of segments.entries()) {
+                const window = windows[index];
+                const segTranscriptStart = segment.startTime - request.startTime;
+                const segTranscriptEnd = segment.endTime - request.startTime;
+                const clipStart = index === 0 ? segTranscriptStart - window.fadeInSeconds : segTranscriptStart;
+                const ass = buildAssFromVtt(request.captionsVtt!, clipStart, segTranscriptEnd, style);
+                totalCueCount += ass.cueCount;
+                if (ass.cueCount > 0) {
+                    const assPath = join(jobRoot, `captions-${index}.ass`);
+                    await writeFile(assPath, ass.content);
+                    assFilePaths.push(assPath);
+                }
+                else {
+                    assFilePaths.push(undefined);
+                }
+            }
+            if (totalCueCount === 0) {
+                throw new Error("Cannot burn in subtitles: the transcript has no lines in this range");
+            }
+        }
+        else {
+            segments.forEach(() => assFilePaths.push(undefined));
+        }
+
+        const fadeNote = wantFade && windows[0].fadeInSeconds === 0 && windows[windows.length - 1].fadeOutSeconds === 0
+            ? "fade skipped: not enough surrounding footage"
+            : "";
 
         await assertJobNotCanceled(job.id);
         await enqueueProgressWrite(job.id, {
@@ -2282,34 +2321,68 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             stageProgress: 0,
             overallProgress: 15,
             videoProgress: 5,
-            message: captionsApplied ? "Encoding clip with captions" : "Encoding clip",
+            message: totalCueCount > 0 ? "Encoding clip with captions" : "Encoding clip",
         });
 
+        // One -i per kept segment (same source file, different -ss/-t each
+        // time — entirely standard). Each becomes its own labeled filter chain
+        // (captions + fade, from the existing single-segment helpers, plus the
+        // pts/timebase/fps normalization concatenation needs — mirroring
+        // renderConcatenatedVideoArtifact's proven pattern for the sermon
+        // pipeline), then joined with the `concat` filter.
+        const args = ["-hide_banner", "-y"];
+        for (const window of windows) {
+            const duration = window.effectiveEnd - window.effectiveStart;
+            args.push("-ss", String(window.effectiveStart), "-t", String(duration), "-i", job.asset.sourcePath);
+        }
+
+        const filterParts: string[] = [];
+        const videoLabels: string[] = [];
+        const audioLabels: string[] = [];
+
+        windows.forEach((window, index) => {
+            const videoChain = buildClipVideoFilter({ window, assFilePath: assFilePaths[index] });
+            filterParts.push(`[${index}:v]${videoChain},settb=AVTB,setpts=PTS-STARTPTS,fps=${defaultFps}[v${index}]`);
+            videoLabels.push(`[v${index}]`);
+
+            if (media.hasAudio) {
+                const audioChain = buildClipAudioFilter(window);
+                const achain = [audioChain, "asetpts=PTS-STARTPTS"].filter(Boolean).join(",");
+                filterParts.push(`[${index}:a]${achain}[a${index}]`);
+                audioLabels.push(`[a${index}]`);
+            }
+        });
+
+        if (media.hasAudio) {
+            const interleaved = segments.map((_, index) => `${videoLabels[index]}${audioLabels[index]}`).join("");
+            filterParts.push(`${interleaved}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
+        }
+        else {
+            filterParts.push(`${videoLabels.join("")}concat=n=${segments.length}:v=1:a=0[outv]`);
+        }
+
+        args.push("-filter_complex", filterParts.join(";"), "-map", "[outv]");
+        if (media.hasAudio) {
+            args.push("-map", "[outa]");
+        }
+        args.push(
+            ...getVideoEncodingArgs(effectiveHardware),
+            ...(media.hasAudio ? ["-c:a", "aac"] : ["-an"]),
+            "-movflags",
+            "+faststart",
+            outputVideoPath,
+        );
+
+        const totalEffectiveDuration = windows.reduce((sum, window) => sum + (window.effectiveEnd - window.effectiveStart), 0);
+
         try {
-            await runFfmpeg(job.id, [
-                "-hide_banner",
-                "-y",
-                "-ss",
-                String(window.effectiveStart),
-                "-i",
-                job.asset.sourcePath,
-                "-t",
-                String(effectiveDuration),
-                "-vf",
-                videoFilter,
-                ...(audioFilter ? ["-af", audioFilter] : []),
-                ...getVideoEncodingArgs(effectiveHardware),
-                ...(media.hasAudio ? ["-c:a", "aac"] : ["-an"]),
-                "-movflags",
-                "+faststart",
-                outputVideoPath,
-            ], {
-                totalDurationSec: effectiveDuration,
+            await runFfmpeg(job.id, args, {
+                totalDurationSec: totalEffectiveDuration,
                 onProgress: createBandReporter(job.id, "videoProgress", 5, 100),
             });
         }
         finally {
-            await rm(assFilePath, { force: true });
+            await Promise.all(assFilePaths.map((assPath) => (assPath ? rm(assPath, { force: true }) : Promise.resolve())));
         }
 
         await assertJobNotCanceled(job.id);
