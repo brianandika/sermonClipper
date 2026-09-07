@@ -286,7 +286,7 @@ export function landscapeCaptionStyle(width: number, height: number): AssStyleOp
         fontSize,
         marginLR: Math.round(width * 0.06),
         marginV: Math.round(height * 0.06),
-        outline: Math.max(1, Math.round(fontSize * 0.03)),
+        outline: Math.max(1, Math.round(fontSize * 0.045)),
         shadow: Math.max(0, Math.round(fontSize * 0.012)),
         maxCharsPerLine: 42,
         uppercase: false,

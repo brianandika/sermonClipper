@@ -9,6 +9,7 @@ import {
   getHardwareCapabilities,
   uploadAsset,
 } from '../api';
+import { formatMinSec, parseMinSec } from '../timeFormat';
 
 interface EditorFlowProps {
   asset: Asset;
@@ -94,11 +95,6 @@ function formatTimestamp(seconds: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
 }
 
-function parseTimeInput(value: string): number | null {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function getBaseFilename(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -133,8 +129,8 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const cachedHardware = readCachedHardwareCapabilities();
   const [resolvedDuration, setResolvedDuration] = useState(Math.max(0, assetDuration));
 
-  const [startTimeText, setStartTimeText] = useState('0.000');
-  const [endTimeText, setEndTimeText] = useState(Math.max(0, assetDuration).toFixed(3));
+  const [startTimeText, setStartTimeText] = useState('0:00.000');
+  const [endTimeText, setEndTimeText] = useState(formatMinSec(Math.max(0, assetDuration)));
   const [clips, setClips] = useState<ClipRange[]>([]);
   const [currentTime, setCurrentTime] = useState(0);
   const [fps, setFps] = useState(30);
@@ -167,14 +163,24 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const videoSourceUrl = getAssetSourceUrl(asset.assetId);
   const effectiveDuration = Math.max(0, resolvedDuration, assetDuration);
 
-  const startTime = parseTimeInput(startTimeText) ?? 0;
-  const endTime = parseTimeInput(endTimeText) ?? effectiveDuration;
+  const startTime = parseMinSec(startTimeText) ?? 0;
+  const endTime = parseMinSec(endTimeText) ?? effectiveDuration;
   const playbackSpeed = PLAYBACK_SPEEDS[playbackSpeedIndex] ?? 1;
 
   const playbackLabel = useMemo(() => {
     const direction = playbackSpeed < 0 ? 'Backward' : 'Forward';
     return `Speed: ${Math.abs(playbackSpeed)}x ${direction}`;
   }, [playbackSpeed]);
+
+  // Cut clips remove time from the kept [startTime, endTime] span; a cover
+  // image (if any) adds its intro duration back on at the front. Approximate
+  // preview only — the worker's own math (validated ranges, real fps) is
+  // authoritative at submit time.
+  const totalCutSeconds = clips
+    .filter((clip) => clip.start > 0 || clip.end > 0)
+    .reduce((total, clip) => total + Math.max(0, clip.end - clip.start), 0);
+  const introPreviewSeconds = coverImageFile ? 5 : 0;
+  const estimatedResultDuration = Math.max(0, endTime - startTime - totalCutSeconds) + introPreviewSeconds;
 
   useEffect(() => {
     let mounted = true;
@@ -196,9 +202,9 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
           if (Number.isFinite(durationFromMetadata) && durationFromMetadata > 0) {
             setResolvedDuration((prev) => Math.max(prev, durationFromMetadata));
             setEndTimeText((prev) => {
-              const current = parseTimeInput(prev);
+              const current = parseMinSec(prev);
               if (current === null || current <= 0) {
-                return durationFromMetadata.toFixed(3);
+                return formatMinSec(durationFromMetadata);
               }
               return prev;
             });
@@ -396,14 +402,14 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
     if (!videoRef.current) {
       return;
     }
-    setStartTimeText(videoRef.current.currentTime.toFixed(3));
+    setStartTimeText(formatMinSec(videoRef.current.currentTime));
   };
 
   const setEndToCurrent = () => {
     if (!videoRef.current) {
       return;
     }
-    setEndTimeText(videoRef.current.currentTime.toFixed(3));
+    setEndTimeText(formatMinSec(videoRef.current.currentTime));
   };
 
   const addClip = () => {
@@ -431,7 +437,7 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   };
 
   const updateClipField = (index: number, field: 'start' | 'end', value: string) => {
-    const parsed = parseTimeInput(value);
+    const parsed = parseMinSec(value);
     setClips((prev) =>
       prev.map((clip, clipIndex) => {
         if (clipIndex !== index) {
@@ -616,9 +622,9 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
             if (Number.isFinite(loadedDuration) && loadedDuration > 0) {
               setResolvedDuration((prev) => Math.max(prev, loadedDuration));
               setEndTimeText((prev) => {
-                const current = parseTimeInput(prev);
+                const current = parseMinSec(prev);
                 if (current === null || current <= 0) {
-                  return loadedDuration.toFixed(3);
+                  return formatMinSec(loadedDuration);
                 }
                 return prev;
               });
@@ -685,22 +691,25 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         </div>
       </div>
 
-      <div className="time-inputs flex" style={{ gap: '2rem', marginBottom: '1rem', width: '100%' }}>
+      <div className="time-inputs flex" style={{ gap: '2rem', marginBottom: '0.35rem', width: '100%' }}>
         <div className="flex">
-          <label htmlFor="start_time">Start Time (s):</label>
-          <input id="start_time" type="text" value={startTimeText} onChange={(e) => setStartTimeText(e.target.value)} />
+          <label htmlFor="start_time">Start Time:</label>
+          <input id="start_time" type="text" value={startTimeText} placeholder="m:ss.mmm" onChange={(e) => setStartTimeText(e.target.value)} />
           <button type="button" className="btn set-start-time" onClick={setStartToCurrent}>Set</button>
           <button type="button" className="btn jump-to-start-time" onClick={() => jumpToTime(startTime)}>Jump</button>
         </div>
         <div className="flex">
-          <label htmlFor="end_time">End Time (s):</label>
-          <input id="end_time" type="text" value={endTimeText} onChange={(e) => setEndTimeText(e.target.value)} />
+          <label htmlFor="end_time">End Time:</label>
+          <input id="end_time" type="text" value={endTimeText} placeholder="m:ss.mmm" onChange={(e) => setEndTimeText(e.target.value)} />
           <button type="button" className="btn set-end-time" onClick={setEndToCurrent}>Set</button>
           <button type="button" className="btn jump-to-end-time" onClick={() => jumpToTime(endTime)}>Jump</button>
         </div>
       </div>
+      <p style={{ width: '100%', margin: '0 0 1rem', color: '#64748b', fontSize: '0.85rem' }}>
+        Times are minutes:seconds.milliseconds (e.g. 2:05.500).
+      </p>
 
-      <div id="clips" className="grid" style={{ width: '100%', marginBottom: '1rem' }}>
+      <div id="clips" className="grid" style={{ width: '100%', marginBottom: '0.5rem' }}>
         <label>Clips to Cut:</label>
         {clips.length === 0 ? (
           <div className="clip" />
@@ -710,8 +719,8 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
               <input
                 type="text"
                 name="clip_start[]"
-                value={clip.start.toFixed(3)}
-                placeholder="Start Time"
+                value={formatMinSec(clip.start)}
+                placeholder="m:ss.mmm"
                 onChange={(e) => updateClipField(idx, 'start', e.target.value)}
               />
               <button type="button" className="btn set-clip-start" onClick={() => setClipStartToCurrent(idx)}>Set</button>
@@ -719,8 +728,8 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
               <input
                 type="text"
                 name="clip_end[]"
-                value={clip.end.toFixed(3)}
-                placeholder="End Time"
+                value={formatMinSec(clip.end)}
+                placeholder="m:ss.mmm"
                 onChange={(e) => updateClipField(idx, 'end', e.target.value)}
               />
               <button type="button" className="btn set-clip-end" onClick={() => setClipEndToCurrent(idx)}>Set</button>
@@ -733,9 +742,13 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         )}
       </div>
 
-      <button type="button" className="btn add-clip" onClick={addClip} style={{ marginBottom: '1rem' }}>
-        Add Another Clip
+      <button type="button" className="btn add-clip" onClick={addClip} style={{ marginBottom: '0.5rem' }}>
+        Add Another Clip to Cut
       </button>
+
+      <p style={{ width: '100%', margin: '0 0 1rem', color: '#334155', fontSize: '0.95rem' }}>
+        Estimated result length: <strong>{formatMinSec(estimatedResultDuration)}</strong>
+      </p>
 
       <div className="flex centered" style={{ width: '100%', marginBottom: '1rem' }}>
         <label htmlFor="image">Upload Cover Image:</label>
@@ -839,22 +852,28 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
       </div>
 
       <div style={{ width: '100%', marginTop: '1rem' }}>
-        <label htmlFor="fade_seconds" style={{ display: 'block' }}>
-          Fade in/out: {fadeSeconds === 0 ? 'None' : `${fadeSeconds}s`}
-        </label>
-        <input
-          id="fade_seconds"
-          type="range"
-          min={0}
-          max={MAX_FADE_SECONDS}
-          step={1}
-          value={fadeSeconds}
-          onChange={(e) => setFadeSeconds(Number(e.target.value))}
-          style={{ width: '100%' }}
-        />
+        <label style={{ display: 'block', marginBottom: '0.5rem' }}>Fade in/out</label>
+        <div role="group" aria-label="Fade in/out duration" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {Array.from({ length: MAX_FADE_SECONDS + 1 }, (_, seconds) => (
+            <button
+              key={seconds}
+              type="button"
+              className="btn btn-secondary"
+              aria-pressed={fadeSeconds === seconds}
+              onClick={() => setFadeSeconds(seconds)}
+              style={
+                fadeSeconds === seconds
+                  ? { background: '#2563eb', color: '#fff', borderColor: '#2563eb' }
+                  : undefined
+              }
+            >
+              {seconds === 0 ? 'None' : `${seconds}s`}
+            </button>
+          ))}
+        </div>
         <small style={{ color: '#64748b' }}>
           Fades the picture and sound in at the start and out at the end. {DEFAULT_FADE_SECONDS}s is the
-          long-standing default; drag to 0 for none, or up to {MAX_FADE_SECONDS}s for a slower fade.
+          long-standing default; choose None to disable it, or up to {MAX_FADE_SECONDS}s for a slower fade.
         </small>
       </div>
 
