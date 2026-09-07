@@ -23,6 +23,10 @@ interface ClipRange {
 
 const PLAYBACK_SPEEDS = [-4, -2, -1, 1, 2, 4];
 const DEFAULT_PLAYBACK_INDEX = 3;
+// Mirrors @sermon-clipper/shared's DEFAULT_FADE_SECONDS/MAX_FADE_SECONDS —
+// the original always-on 1s fade is still the default, just configurable now.
+const DEFAULT_FADE_SECONDS = 1;
+const MAX_FADE_SECONDS = 5;
 const HARDWARE_CACHE_KEY = 'editor-hardware-capabilities';
 
 interface CachedHardwareCapabilities {
@@ -146,6 +150,10 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
   const [coverImageUploading, setCoverImageUploading] = useState(false);
   const [outputBaseFilename, setOutputBaseFilename] = useState(() => getBaseFilename(asset.originalFilename));
   const [deliverTranscript, setDeliverTranscript] = useState(true);
+  // Checked (default) ⇒ preserveAspectRatio: false, the original always-on
+  // 1920x1080 canvas. Unchecked ⇒ keep the source's own resolution/shape.
+  const [standardizeResolution, setStandardizeResolution] = useState(true);
+  const [fadeSeconds, setFadeSeconds] = useState(DEFAULT_FADE_SECONDS);
   const [playbackSpeedIndex, setPlaybackSpeedIndex] = useState(DEFAULT_PLAYBACK_INDEX);
   const [submittingJob, setSubmittingJob] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -558,6 +566,8 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         fps,
         hardware,
         deliverTranscript,
+        fadeSeconds,
+        preserveAspectRatio: !standardizeResolution,
       });
 
       onSuccess(job);
@@ -805,6 +815,46 @@ export default function EditorFlow({ asset, onSuccess, onCancel }: EditorFlowPro
         <small style={{ color: '#64748b' }}>
           Delivers the finished transcript to the SermonGuide inbox so a guide can be published from
           any device. Uncheck to keep this sermon local.
+        </small>
+      </div>
+
+      <div style={{ width: '100%', marginTop: '1rem' }}>
+        <label
+          htmlFor="standardize_resolution"
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
+        >
+          <input
+            id="standardize_resolution"
+            type="checkbox"
+            checked={standardizeResolution}
+            onChange={(e) => setStandardizeResolution(e.target.checked)}
+            style={{ width: 'auto', margin: 0 }}
+          />
+          Standardize to 1920x1080
+        </label>
+        <small style={{ color: '#64748b' }}>
+          Uncheck to keep the source video's own resolution and aspect ratio instead of scaling and
+          padding it to a fixed landscape canvas.
+        </small>
+      </div>
+
+      <div style={{ width: '100%', marginTop: '1rem' }}>
+        <label htmlFor="fade_seconds" style={{ display: 'block' }}>
+          Fade in/out: {fadeSeconds === 0 ? 'None' : `${fadeSeconds}s`}
+        </label>
+        <input
+          id="fade_seconds"
+          type="range"
+          min={0}
+          max={MAX_FADE_SECONDS}
+          step={1}
+          value={fadeSeconds}
+          onChange={(e) => setFadeSeconds(Number(e.target.value))}
+          style={{ width: '100%' }}
+        />
+        <small style={{ color: '#64748b' }}>
+          Fades the picture and sound in at the start and out at the end. {DEFAULT_FADE_SECONDS}s is the
+          long-standing default; drag to 0 for none, or up to {MAX_FADE_SECONDS}s for a slower fade.
         </small>
       </div>
 

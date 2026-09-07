@@ -19,13 +19,7 @@ export interface Asset {
   updatedAt: string;
 }
 
-export type JobKind = 'sermon' | 'transcribeSource' | 'short' | 'clip';
-
-export interface Clip {
-  id?: string;
-  startTime: number;
-  endTime: number;
-}
+export type JobKind = 'sermon' | 'transcribeSource' | 'short' | 'burnSubtitles';
 
 export type HardwareOption = 'auto' | 'cpu' | 'intel' | 'cuda' | 'apple' | 'vaapi';
 
@@ -74,7 +68,10 @@ export interface Job {
     endCard?: boolean;
     title?: string;
     parentJobId?: string;
-    fade?: boolean;
+    fadeSeconds?: number;
+    preserveAspectRatio?: boolean;
+    sourceJobId?: string;
+    captionsVtt?: string;
   };
   failureReason: string | null;
   createdAt: string;
@@ -107,54 +104,26 @@ export interface Result {
   createdAt: string;
 }
 
-// One line of a clip's transcript, as edited/reviewed client-side (never
-// persisted until export). Mirrors the API's TranscriptCue.
-export interface ClipTranscriptCue {
+// One line of a transcript, as edited/reviewed client-side (never persisted
+// until "Burn in subtitles" is clicked). Mirrors the API's TranscriptCue.
+export interface EditableTranscriptCue {
   start: number;
   end: number;
   text: string;
 }
 
-// What [start, end] a prepared/in-flight clip transcript covers — compared
-// against the live controls to detect staleness (see ClipFlow). Deliberately
-// excludes `fade`: transcription is never fade-widened (see
-// createClipTranscribeJob), so toggling fade never invalidates a prepared
-// transcript. `cues` are 0-based relative to THIS start (not necessarily the
-// live, possibly-since-edited `draft.start`) — see ClipFlow's cueOffset.
-export interface ClipPreparedFor {
-  start: number;
-  end: number;
-}
-
-// A gap to cut out of [start, end] — the kept output is everything between
-// the cut gaps, concatenated. Mirrors EditorFlow's ClipRange/"Clips to Cut".
-export interface ClipCutGap {
-  start: number;
-  end: number;
-}
-
-// All of ClipFlow's per-source state, lifted to App so switching tabs (which
-// unmounts ClipFlow) never loses the user's trim points, toggles, or an
-// in-flight/prepared transcript — the same reason Shorts' state is lifted,
-// but ClipFlow has no server-side "saved moments" list to rehydrate from, so
-// everything here has to survive in React state instead.
-export interface ClipDraft {
-  start: number;
-  end: number;
-  fade: boolean;
-  burnSubtitles: boolean;
-  title: string;
-  // Gaps to cut out of [start, end] ("Clips to Cut"). Adding/editing these
-  // never invalidates a prepared transcript — the transcript always covers
-  // the full, uncut [start, end]; the worker drops/re-times cues around the
-  // cuts per-segment at burn time (see processGeneralClipJob).
-  gaps: ClipCutGap[];
-  cues: ClipTranscriptCue[];
-  // What the current `cues` actually cover.
-  preparedFor: ClipPreparedFor | null;
-  // What the in-flight `prepJobId` (if any) was launched for — read back when
-  // it completes, since the controls may have moved on by then.
-  preparingFor: ClipPreparedFor | null;
+// SubtitlesFlow's per-source-job state, lifted to App so switching tabs
+// (which unmounts it) never loses the loaded/edited transcript or an
+// in-flight prepare-transcript job — the same reason ShortsFlow/the old
+// ClipFlow lift their own state. Unlike Clip's old draft, there's no
+// start/end/staleness to track here at all: this operates on one already-
+// finished video in full, so the transcript never goes stale underneath it.
+export interface SubtitlesDraft {
+  sourceJobId: string;
+  cues: EditableTranscriptCue[];
+  // Whether `cues` reflect a loaded/prepared transcript yet (distinct from
+  // `cues.length === 0`, which could also just mean an empty transcript).
+  cuesLoaded: boolean;
   prepJobId: string | null;
 }
 

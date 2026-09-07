@@ -3,28 +3,22 @@ import { bootstrapSession, createShortsSourceFromJob, createTranscribeJob, getAs
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
 import ShortsFlow from './components/ShortsFlow';
-import ClipFlow from './components/ClipFlow';
+import SubtitlesFlow from './components/SubtitlesFlow';
 import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
 import TranscribeResultsFlow from './components/TranscribeResultsFlow';
-import { Asset, ClipDraft, Job, Result, Session } from './types';
+import { Asset, Job, Result, Session, SubtitlesDraft } from './types';
 
-function createClipDraft(source: Asset): ClipDraft {
+function createSubtitlesDraft(sourceJobId: string): SubtitlesDraft {
   return {
-    start: 0,
-    end: source.duration ?? 0,
-    fade: false,
-    burnSubtitles: false,
-    title: '',
-    gaps: [],
+    sourceJobId,
     cues: [],
-    preparedFor: null,
-    preparingFor: null,
+    cuesLoaded: false,
     prepJobId: null,
   };
 }
 
-type AppFlow = 'upload' | 'editor' | 'shorts' | 'clip' | 'jobs' | 'results';
+type AppFlow = 'upload' | 'editor' | 'shorts' | 'subtitles' | 'jobs' | 'results';
 
 interface NavItem {
   key: AppFlow;
@@ -47,14 +41,12 @@ function App() {
   // job (reuse path) or the transcribe job (standalone-upload-for-shorts path).
   const [shortsParentJobId, setShortsParentJobId] = useState<string | null>(null);
   const [shortsBusy, setShortsBusy] = useState(false);
-  // Clip source + its whole draft (trim points, toggles, transcript-in-
-  // progress), lifted for the same reason as the Shorts state above — see
-  // ClipDraft's own comment for why ClipFlow needs so much more of its state
-  // lifted than ShortsFlow does.
-  const [clipSource, setClipSource] = useState<Asset | null>(null);
-  const [clipDraft, setClipDraft] = useState<ClipDraft | null>(null);
-  const patchClipDraft = (patch: Partial<ClipDraft>) => {
-    setClipDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+  // Subtitles source job + its draft (loaded/edited transcript, in-flight
+  // prepare job), lifted for the same reason as the Shorts state above.
+  const [subtitlesSourceJob, setSubtitlesSourceJob] = useState<Job | null>(null);
+  const [subtitlesDraft, setSubtitlesDraft] = useState<SubtitlesDraft | null>(null);
+  const patchSubtitlesDraft = (patch: Partial<SubtitlesDraft>) => {
+    setSubtitlesDraft((prev) => (prev ? { ...prev, ...patch } : prev));
   };
   // Asset backing a transcribe-only "View Result" page (no Result row exists for
   // transcribeSource jobs — the video + transcript come straight from the asset).
@@ -101,13 +93,12 @@ function App() {
     }
   };
 
-  // "Upload to Clip": land directly on the Clip tab. Unlike Shorts, no job is
-  // queued yet — whether a transcript is needed isn't known until the user
-  // checks "Burn in subtitles".
-  const handleUploadForClip = (uploadedAsset: Asset) => {
-    setClipSource(uploadedAsset);
-    setClipDraft(createClipDraft(uploadedAsset));
-    setFlow('clip');
+  // Open the Subtitles tab for a completed sermon job — from either the Jobs
+  // list or the Results page's "Add Subtitles" action.
+  const openSubtitlesForJob = (sourceJob: Job) => {
+    setSubtitlesSourceJob(sourceJob);
+    setSubtitlesDraft(createSubtitlesDraft(sourceJob.jobId));
+    setFlow('subtitles');
   };
 
   // Open a transcribe-only job's result page: the uploaded video + its transcript
@@ -187,8 +178,8 @@ function App() {
     setShortsSource(null);
     setShortsPrepJobId(null);
     setShortsParentJobId(null);
-    setClipSource(null);
-    setClipDraft(null);
+    setSubtitlesSourceJob(null);
+    setSubtitlesDraft(null);
     setTranscribeAsset(null);
     setFlow('upload');
   };
@@ -223,10 +214,10 @@ function App() {
       disabled: !shortsSource,
     },
     {
-      key: 'clip',
-      label: 'Clip',
-      description: clipSource ? 'Trim any video' : 'Upload a video to clip',
-      disabled: !clipSource,
+      key: 'subtitles',
+      label: 'Subtitles',
+      description: subtitlesSourceJob ? 'Review and burn in captions' : 'Open from a job or result',
+      disabled: !subtitlesSourceJob,
     },
   ];
 
@@ -244,9 +235,9 @@ function App() {
     if (nextFlow === 'shorts' && !shortsSource) {
       return;
     }
-    // Clip is only reachable via "Upload to Clip" — never by clicking the tab
-    // with no source.
-    if (nextFlow === 'clip' && (!clipSource || !clipDraft)) {
+    // Subtitles is only reachable via a job's "Add Subtitles" action — never
+    // by clicking the tab with no source.
+    if (nextFlow === 'subtitles' && (!subtitlesSourceJob || !subtitlesDraft)) {
       return;
     }
     setFlow(nextFlow);
@@ -334,7 +325,6 @@ function App() {
           <UploadFlow
             onSuccess={handleUploadSuccess}
             onUploadForShorts={handleUploadForShorts}
-            onUploadForClip={handleUploadForClip}
           />
         )}
         {flow === 'editor' && asset && (
@@ -349,18 +339,18 @@ function App() {
             parentJobId={shortsParentJobId}
           />
         )}
-        {flow === 'clip' && clipSource && clipDraft && (
-          <ClipFlow
-            source={clipSource}
-            draft={clipDraft}
-            onDraftChange={patchClipDraft}
+        {flow === 'subtitles' && subtitlesSourceJob && subtitlesDraft && (
+          <SubtitlesFlow
+            sourceJob={subtitlesSourceJob}
+            draft={subtitlesDraft}
+            onDraftChange={patchSubtitlesDraft}
           />
         )}
         {flow === 'jobs' && (
-          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onOpenShorts={openShortsForJob} onViewTranscribeResult={handleOpenTranscribeResult} shortsBusy={shortsBusy} onReset={handleReset} />
+          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onOpenShorts={openShortsForJob} onViewTranscribeResult={handleOpenTranscribeResult} onAddSubtitles={openSubtitlesForJob} shortsBusy={shortsBusy} onReset={handleReset} />
         )}
         {flow === 'results' && job && result && (
-          <ResultsFlow result={result} job={job} onCreateShorts={openShortsForJob} shortsBusy={shortsBusy} />
+          <ResultsFlow result={result} job={job} onCreateShorts={openShortsForJob} onAddSubtitles={openSubtitlesForJob} shortsBusy={shortsBusy} />
         )}
         {flow === 'results' && job && !result && transcribeAsset && (
           <TranscribeResultsFlow job={job} asset={transcribeAsset} onOpenShorts={openShortsForJob} shortsBusy={shortsBusy} />

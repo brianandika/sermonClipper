@@ -13,9 +13,9 @@ import {
     Min,
     ValidateIf,
 } from "class-validator";
-import { HardwareOption, type JobKind } from "@sermon-clipper/shared";
+import { HardwareOption, MAX_FADE_SECONDS, type JobKind } from "@sermon-clipper/shared";
 
-const JOB_KINDS: JobKind[] = ["sermon", "transcribeSource", "short", "clip"];
+const JOB_KINDS: JobKind[] = ["sermon", "transcribeSource", "short", "burnSubtitles"];
 
 export class CreateJobDto {
     @IsString()
@@ -45,17 +45,15 @@ export class CreateJobDto {
     @IsNumber()
     introDuration?: number;
 
-    // transcribeSource has no clip range by default, but MAY optionally carry
-    // one to scope transcription to just [startTime, endTime] (+ fade padding)
-    // instead of the whole source — see jobs.service.ts's
-    // validateOptionalTranscribeRange for the "both together, ordered" check.
-    // sermon/short/clip all require start/end unconditionally.
-    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource" || o.startTime !== undefined || o.endTime !== undefined)
+    // transcribeSource and burnSubtitles don't need a clip range at all (they
+    // operate on a whole existing video, identified by sourceJobId, or the
+    // whole asset) — sermon/short require start/end unconditionally.
+    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource" && o.kind !== "burnSubtitles")
     @Type(() => Number)
     @IsNumber()
     startTime!: number;
 
-    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource" || o.startTime !== undefined || o.endTime !== undefined)
+    @ValidateIf((o: CreateJobDto) => o.kind !== "transcribeSource" && o.kind !== "burnSubtitles")
     @Type(() => Number)
     @IsNumber()
     endTime!: number;
@@ -137,13 +135,29 @@ export class CreateJobDto {
     @IsBoolean()
     deliverTranscript?: boolean;
 
-    // "clip" only: 3s fade to/from black at each end.
+    // "sermon" only: fade the composed output in/out this many seconds at
+    // each end. 0 = no fade. Omitted ⇒ worker default (1s, the original
+    // always-on behavior).
+    @IsOptional()
+    @Type(() => Number)
+    @IsNumber()
+    @Min(0)
+    @Max(MAX_FADE_SECONDS)
+    fadeSeconds?: number;
+
+    // "sermon" only: skip the standard 1920x1080 canvas and keep the source's
+    // own resolution/aspect ratio instead. Default false (unchanged behavior).
     @IsOptional()
     @IsBoolean()
-    fade?: boolean;
+    preserveAspectRatio?: boolean;
 
-    // "clip" only, required when captions === true: the reviewed WebVTT text
-    // to burn in (already scoped/0-based to this clip's own window).
+    // "transcribeSource" (retry mode) and "burnSubtitles": the other job
+    // whose finished video this one operates on.
+    @IsOptional()
+    @IsString()
+    sourceJobId?: string;
+
+    // "burnSubtitles" only, required: the reviewed WebVTT text to burn in.
     @IsOptional()
     @IsString()
     captionsVtt?: string;

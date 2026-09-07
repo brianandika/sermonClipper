@@ -115,6 +115,12 @@ export const createJob = async (jobData: {
   fps?: number;
   hardware?: HardwareOption;
   deliverTranscript?: boolean;
+  // Fade the composed output in/out this many seconds at each end (0 = no
+  // fade). Omitted ⇒ worker default (1s, the original always-on behavior).
+  fadeSeconds?: number;
+  // Skip the standard 1920x1080 canvas and keep the source's own
+  // resolution/aspect ratio instead. Default false.
+  preserveAspectRatio?: boolean;
 }) => {
   const { data } = await api.post('/jobs', jobData);
   return data;
@@ -127,20 +133,15 @@ export const createTranscribeJob = async (assetId: string): Promise<Job> => {
   return data;
 };
 
-// Transcribe only [startTime, endTime] of a source — used by the Clip flow so
-// a long recording doesn't need a full-video transcription just to caption a
-// couple of minutes. Deliberately NOT fade-widened: the resulting cues are
-// 0-based relative to startTime, matching the marked selection exactly (no
-// offset to reconcile against the preview player, which always shows the
-// full source). Idempotency-free (unlike createTranscribeJob): each call
-// always queues a fresh job, since different ranges on the same asset must
-// never dedupe against each other. The result is fetched via getResult(jobId)
-// + getResultTranscriptText(resultId) once the job completes — it is NOT
-// written to the asset's own transcriptPath.
-export const createClipTranscribeJob = async (params: {
+// Retry transcription for a completed job that has no transcript yet
+// (transcription was disabled, or failed the first time) — transcribes THAT
+// job's own finished video and writes back to its own Result.transcriptPath.
+// Used by the Subtitles flow before a transcript can be reviewed. Fresh every
+// call is fine — the API dedupes an already-in-flight retry for the same
+// sourceJobId.
+export const createRetryTranscriptJob = async (params: {
   assetId: string;
-  startTime: number;
-  endTime: number;
+  sourceJobId: string;
 }): Promise<Job> => {
   const { data } = await api.post('/jobs', { kind: 'transcribeSource', ...params });
   return data;
@@ -171,35 +172,17 @@ export const getShortsForAsset = async (assetId: string): Promise<Job[]> => {
   return data;
 };
 
-// Create one general-purpose clip (source aspect ratio preserved) with optional
-// fade-to-black at both ends and optional burned-in subtitles. captionsVtt is
-// required when captions is true — the reviewed transcript text from a prior
-// createClipTranscribeJob for this exact [startTime, endTime]. fade doesn't
-// need to match what was used (if anything) when the transcript was prepared
-// — the worker re-offsets the cues for whatever fade this export actually
-// requests.
-export const createClipJob = async (params: {
+// Burn a reviewed transcript into a completed job's finished video, producing
+// a new derived video (the original is untouched). assetId is the same asset
+// the source job used; sourceJobId identifies which job's video to caption.
+export const createBurnSubtitlesJob = async (params: {
   assetId: string;
-  startTime: number;
-  endTime: number;
-  // Gaps to cut out of [startTime, endTime] ("Clips to Cut") — same
-  // semantics as the sermon editor's clipStarts/clipEnds: the kept output is
-  // everything between them, concatenated.
-  clipStarts?: number[];
-  clipEnds?: number[];
-  fade: boolean;
-  captions: boolean;
-  captionsVtt?: string;
+  sourceJobId: string;
+  captionsVtt: string;
   title?: string;
   outputVideoFilename?: string;
 }): Promise<Job> => {
-  const { data } = await api.post('/jobs', { kind: 'clip', ...params });
-  return data;
-};
-
-// All persisted general clips for a source asset (newest first).
-export const getClipsForAsset = async (assetId: string): Promise<Job[]> => {
-  const { data } = await api.get(`/jobs/clips/${assetId}`);
+  const { data } = await api.post('/jobs', { kind: 'burnSubtitles', ...params });
   return data;
 };
 
@@ -250,8 +233,8 @@ export const getResultArtifact = (resultId: string, type: 'audio' | 'video' | 't
   return `${API_BASE}/results/${resultId}/${type}`;
 };
 
-// Fetch the raw WebVTT text of a Result's transcript artifact — used to read
-// back a scoped clip-transcript job's output (see createClipTranscribeJob).
+// Fetch the raw WebVTT text of a Result's transcript artifact — used by the
+// Subtitles flow to load a completed job's own transcript for review.
 export const getResultTranscriptText = async (resultId: string): Promise<string> => {
   const { data } = await api.get(`/results/${resultId}/transcript`, { responseType: 'text' });
   return data as string;

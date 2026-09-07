@@ -8,9 +8,8 @@ import { promisify } from "node:util";
 import { execFile, spawn } from "node:child_process";
 import IORedis from "ioredis";
 import { PrismaClient, JobStatus as PrismaJobStatus, HardwareOption } from "@prisma/client";
-import { CLIP_FADE_SECONDS, JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type JobKind, type QueueName } from "@sermon-clipper/shared";
-import { buildAssFromVtt, buildShortVideoFilter, clamp, landscapeCaptionStyle, MAX_ZOOM, MIN_ZOOM } from "./captions";
-import { buildClipAudioFilter, buildClipVideoFilter, resolveClipWindow } from "./clip-filters";
+import { JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type JobKind, type QueueName } from "@sermon-clipper/shared";
+import { buildAssFromVtt, buildShortVideoFilter, clamp, escapeAssPathForFilter, landscapeCaptionStyle, MAX_ZOOM, MIN_ZOOM } from "./captions";
 
 const execFileAsync = promisify(execFile);
 const defaultCpuConcurrency = Math.max(1, Math.min(4, availableParallelism()));
@@ -86,11 +85,15 @@ const runtimeEnv = {
     sermonGuidePasscode: process.env.SERMONGUIDE_PASSCODE ?? "",
 };
 const defaultIntroDurationSeconds = 5;
+// Default/max for the user-configurable sermon fade-in/out length
+// (request.fadeSeconds) — the simple overlay-dim-the-composed-output's-own-
+// edges mechanism, unchanged since before this was configurable. 0 = no fade.
 const defaultFadeDurationSeconds = 1;
+const maxFadeDurationSeconds = 5;
 const defaultIntroTransitionDurationSeconds = 0.5;
 const defaultAudioTransitionDurationSeconds = 1;
-const outputWidth = 1920;
-const outputHeight = 1080;
+const forcedOutputWidth = 1920;
+const forcedOutputHeight = 1080;
 // Shorts end card: a quick crossfade into the branded 9:16 image, then a hold.
 const endCardFadeSeconds = 0.5;
 const endCardHoldSeconds = 3;
@@ -544,11 +547,16 @@ async function detectMediaProperties(jobId: string, videoPath: string) {
     }
 }
 
-function getSegmentVideoFilter(fps = defaultFps) {
+// targetWidth/targetHeight is either the forced 1920x1080 canvas, or the
+// source's own detected resolution when request.preserveAspectRatio is true
+// (see processClipJob) — either way every segment (and the intro image, if
+// any) scales/pads to the SAME target so they concatenate cleanly. When the
+// target already matches the source, scale+pad are no-ops in practice.
+function getSegmentVideoFilter(targetWidth: number, targetHeight: number, fps = defaultFps) {
     return [
         `fps=${fps}`,
-        `scale=${outputWidth}:${outputHeight}:force_original_aspect_ratio=decrease`,
-        `pad=${outputWidth}:${outputHeight}:(ow-iw)/2:(oh-ih)/2`,
+        `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease`,
+        `pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2`,
         "format=yuv420p",
     ].join(",");
 }
@@ -684,6 +692,8 @@ async function encodeSegment(
     startTime: number,
     duration: number,
     hardware: HardwareOption,
+    targetWidth: number,
+    targetHeight: number,
     fps?: number,
     onProgress?: (fraction: number) => void,
 ) {
@@ -698,12 +708,7 @@ async function encodeSegment(
         String(duration),
     ];
 
-    if (fps) {
-        args.push("-vf", getSegmentVideoFilter(fps));
-    }
-    else {
-        args.push("-vf", getSegmentVideoFilter(defaultFps));
-    }
+    args.push("-vf", getSegmentVideoFilter(targetWidth, targetHeight, fps ?? defaultFps));
 
     args.push(
         ...getVideoEncodingArgs(hardware),
@@ -822,6 +827,7 @@ async function renderAudioArtifact(
     segmentDurations: number[],
     transitionDurations: number[],
     outputPath: string,
+    fadeSeconds: number,
     onProgress?: (fraction: number) => void,
 ) {
     const args = ["-hide_banner", "-y"];
@@ -860,16 +866,21 @@ async function renderAudioArtifact(
         outputDuration = segmentDurations.reduce((total, duration) => total + duration, 0);
     }
 
-    const fadeOutStart = Math.max(0, outputDuration - defaultFadeDurationSeconds);
-    filterParts.push(
-        `[${currentAudioLabel}]afade=t=in:st=0:d=${defaultFadeDurationSeconds},afade=t=out:st=${fadeOutStart}:d=${defaultFadeDurationSeconds}[outa]`,
-    );
+    // fadeSeconds <= 0 ("no fade") skips the filter entirely rather than
+    // inserting a d=0 no-op — map the pre-fade label straight through.
+    const finalAudioLabel = fadeSeconds > 0 ? "outa" : currentAudioLabel;
+    if (fadeSeconds > 0) {
+        const fadeOutStart = Math.max(0, outputDuration - fadeSeconds);
+        filterParts.push(
+            `[${currentAudioLabel}]afade=t=in:st=0:d=${fadeSeconds},afade=t=out:st=${fadeOutStart}:d=${fadeSeconds}[outa]`,
+        );
+    }
 
     args.push(
         "-filter_complex",
         filterParts.join(";"),
         "-map",
-        "[outa]",
+        `[${finalAudioLabel}]`,
         "-c:a",
         "aac",
         outputPath,
@@ -885,6 +896,7 @@ async function renderSegmentsWithTransitions(
     outputPath: string,
     transitionDurations: number[],
     hardware: HardwareOption,
+    fadeSeconds: number,
     onProgress?: (fraction: number) => void,
 ) {
     const args = ["-hide_banner", "-y"];
@@ -924,17 +936,25 @@ async function renderSegmentsWithTransitions(
     }
 
     const outputDuration = getSequenceDuration(segmentDurations, transitionDurations);
-    const fadeOutStart = Math.max(0, outputDuration - defaultFadeDurationSeconds);
-    filterParts.push(`[${currentVideoLabel}]fade=t=in:st=0:d=${defaultFadeDurationSeconds},fade=t=out:st=${fadeOutStart}:d=${defaultFadeDurationSeconds}[outv]`);
-    filterParts.push(`[${currentAudioLabel}]afade=t=in:st=0:d=${defaultFadeDurationSeconds},afade=t=out:st=${fadeOutStart}:d=${defaultFadeDurationSeconds}[outa]`);
+    // fadeSeconds <= 0 ("no fade") skips the filter entirely rather than
+    // inserting a d=0 no-op — map the pre-fade labels straight through.
+    let finalVideoLabel = currentVideoLabel;
+    let finalAudioLabel = currentAudioLabel;
+    if (fadeSeconds > 0) {
+        const fadeOutStart = Math.max(0, outputDuration - fadeSeconds);
+        filterParts.push(`[${currentVideoLabel}]fade=t=in:st=0:d=${fadeSeconds},fade=t=out:st=${fadeOutStart}:d=${fadeSeconds}[outv]`);
+        filterParts.push(`[${currentAudioLabel}]afade=t=in:st=0:d=${fadeSeconds},afade=t=out:st=${fadeOutStart}:d=${fadeSeconds}[outa]`);
+        finalVideoLabel = "outv";
+        finalAudioLabel = "outa";
+    }
 
     args.push(
         "-filter_complex",
         filterParts.join(";"),
         "-map",
-        "[outv]",
+        `[${finalVideoLabel}]`,
         "-map",
-        "[outa]",
+        `[${finalAudioLabel}]`,
         ...getVideoEncodingArgs(hardware),
         "-c:a",
         "aac",
@@ -952,6 +972,7 @@ async function renderConcatenatedVideoArtifact(
     segmentDurations: number[],
     outputPath: string,
     hardware: HardwareOption,
+    fadeSeconds: number,
     onProgress?: (fraction: number) => void,
 ) {
     const args = ["-hide_banner", "-y"];
@@ -972,17 +993,25 @@ async function renderConcatenatedVideoArtifact(
     filterParts.push(`${concatInputs.join("")}concat=n=${segmentPaths.length}:v=1:a=1[vcat][acat]`);
 
     const outputDuration = segmentDurations.reduce((total, duration) => total + duration, 0);
-    const fadeOutStart = Math.max(0, outputDuration - defaultFadeDurationSeconds);
-    filterParts.push(`[vcat]fade=t=in:st=0:d=${defaultFadeDurationSeconds},fade=t=out:st=${fadeOutStart}:d=${defaultFadeDurationSeconds}[outv]`);
-    filterParts.push(`[acat]afade=t=in:st=0:d=${defaultFadeDurationSeconds},afade=t=out:st=${fadeOutStart}:d=${defaultFadeDurationSeconds}[outa]`);
+    // fadeSeconds <= 0 ("no fade") skips the filter entirely rather than
+    // inserting a d=0 no-op — map the pre-fade labels straight through.
+    let finalVideoLabel = "vcat";
+    let finalAudioLabel = "acat";
+    if (fadeSeconds > 0) {
+        const fadeOutStart = Math.max(0, outputDuration - fadeSeconds);
+        filterParts.push(`[vcat]fade=t=in:st=0:d=${fadeSeconds},fade=t=out:st=${fadeOutStart}:d=${fadeSeconds}[outv]`);
+        filterParts.push(`[acat]afade=t=in:st=0:d=${fadeSeconds},afade=t=out:st=${fadeOutStart}:d=${fadeSeconds}[outa]`);
+        finalVideoLabel = "outv";
+        finalAudioLabel = "outa";
+    }
 
     args.push(
         "-filter_complex",
         filterParts.join(";"),
         "-map",
-        "[outv]",
+        `[${finalVideoLabel}]`,
         "-map",
-        "[outa]",
+        `[${finalAudioLabel}]`,
         ...getVideoEncodingArgs(hardware),
         "-c:a",
         "aac",
@@ -1000,6 +1029,8 @@ async function createStillImageClip(
     outputPath: string,
     introDuration: number,
     fps: number,
+    targetWidth: number,
+    targetHeight: number,
     onProgress?: (fraction: number) => void,
 ) {
     await runFfmpeg(jobId, [
@@ -1018,7 +1049,7 @@ async function createStillImageClip(
         "-i",
         `anullsrc=channel_layout=stereo:sample_rate=${defaultIntroSampleRate}`,
         "-vf",
-        getSegmentVideoFilter(fps),
+        getSegmentVideoFilter(targetWidth, targetHeight, fps),
         "-c:v",
         "libx264",
         "-preset",
@@ -1271,6 +1302,22 @@ async function processClipJob(payload: ClipProcessJobData) {
         const introDuration = request.introDuration && request.introDuration > 0
             ? request.introDuration
             : defaultIntroDurationSeconds;
+
+        // Default: force the standard 1920x1080 canvas (unchanged historical
+        // behavior). request.preserveAspectRatio opts out — every segment (and
+        // the intro image, if any) then scales/pads to the SOURCE's own
+        // detected resolution instead, so the output keeps its native shape.
+        // detectMediaProperties already falls back to 1920x1080 if probing
+        // fails, so this never needs its own error handling.
+        const preserveAspectRatio = request.preserveAspectRatio === true;
+        const targetMedia = preserveAspectRatio ? await detectMediaProperties(job.id, job.asset.sourcePath) : null;
+        const targetWidth = targetMedia?.width ?? forcedOutputWidth;
+        const targetHeight = targetMedia?.height ?? forcedOutputHeight;
+
+        // User-configurable fade-in/out length for the composed output (both
+        // audio and video), 0-5s, defaulting to the original always-on 1s.
+        const fadeSeconds = Math.max(0, Math.min(maxFadeDurationSeconds, request.fadeSeconds ?? defaultFadeDurationSeconds));
+
         const jobRoot = getJobRoot(job.sessionId, job.id);
         const segmentsRoot = join(jobRoot, "segments");
         const audioProgramPath = join(jobRoot, "audio-program.m4a");
@@ -1332,6 +1379,8 @@ async function processClipJob(payload: ClipProcessJobData) {
                 segment.startTime,
                 duration,
                 effectiveHardware,
+                targetWidth,
+                targetHeight,
                 requestedFps,
                 createBandReporter(job.id, "audioProgress", segmentBandLow, segmentBandHigh),
             );
@@ -1369,6 +1418,7 @@ async function processClipJob(payload: ClipProcessJobData) {
             segmentDurations,
             audioTransitionDurations,
             audioProgramPath,
+            fadeSeconds,
             createBandReporter(job.id, "audioProgress", 55, 70),
         );
 
@@ -1479,6 +1529,8 @@ async function processClipJob(payload: ClipProcessJobData) {
                 introClipPath,
                 introDuration,
                 requestedFps,
+                targetWidth,
+                targetHeight,
                 createBandReporter(job.id, "videoProgress", 0, 5),
             );
             videoSegmentPaths.unshift(introClipPath);
@@ -1514,6 +1566,7 @@ async function processClipJob(payload: ClipProcessJobData) {
                 videoProgramPath,
                 videoTransitionDurations,
                 effectiveHardware,
+                fadeSeconds,
                 createBandReporter(job.id, "videoProgress", 5, 80),
             );
 
@@ -1544,6 +1597,7 @@ async function processClipJob(payload: ClipProcessJobData) {
                 videoSegmentDurations,
                 videoProgramPath,
                 effectiveHardware,
+                fadeSeconds,
                 createBandReporter(job.id, "videoProgress", 5, 80),
             );
         }
@@ -1767,30 +1821,26 @@ async function processClipJob(payload: ClipProcessJobData) {
     }
 }
 
-// transcribeSource: transcribe an uploaded source video on demand. Two modes,
-// discriminated by whether the request carries a [startTime, endTime]:
+// transcribeSource: transcribe a video on demand. Two modes, discriminated by
+// whether the request carries a sourceJobId:
 //
-//  - Unscoped (no range): transcribes the WHOLE source, writes the .vtt next
-//    to the asset source, and records Asset.transcriptPath — so shorts can be
-//    built without first running a full sermon job, and every short of this
-//    asset can reuse the same transcript.
-//  - Scoped (range present): used by the "clip" flow to transcribe only the
-//    marked [startTime, endTime] instead of the whole video — deliberately
-//    NOT fade-widened, so the resulting VTT is 0-based relative to startTime,
-//    matching what the frontend already has locally (no offset needs
-//    communicating back just to jump/highlight cues against the preview
-//    player). Writes the transcript to a job-scoped path via a Result row
-//    (transcriptPath only, no video/audio) rather than touching
-//    Asset.transcriptPath — a source can be clipped many times with
-//    different, unrelated ranges, so nothing here should be treated as "the"
-//    transcript for the whole asset. processGeneralClipJob independently
-//    re-offsets these same cues by its own fadeInSeconds when burning them
-//    into the (possibly fade-padded) final output — see its buildAssFromVtt
-//    call.
+//  - Default (no sourceJobId): transcribes the WHOLE uploaded asset, writes
+//    the .vtt next to the asset source, and records Asset.transcriptPath —
+//    so shorts can be built without first running a full sermon job, and
+//    every short of this asset can reuse the same transcript.
+//  - Retry (sourceJobId present): used by the Subtitles flow when a
+//    completed sermon job has no transcript yet (transcription was disabled,
+//    or failed the first time). Transcribes THAT job's own finished
+//    Result.videoPath — not the raw asset — and writes back to THAT job's
+//    OWN Result.transcriptPath, exactly matching what processClipJob's own
+//    post-render transcription already does. Because it's cut from the
+//    already-delivered MP4, the resulting VTT is 0-based against that exact
+//    video with no offset math needed anywhere downstream.
 //
-// Unlike the sermon path's best-effort transcription, a failure here is fatal
-// in both modes — the caller (Shorts' moment picker, or the Clip export gate)
-// needs the transcript to proceed.
+// Unlike the sermon path's own post-render transcription (best-effort, never
+// fails the job), a failure here IS fatal in both modes — the caller (Shorts'
+// moment picker, or the Subtitles review step) needs the transcript to
+// proceed and has no fallback path if it's missing.
 async function processTranscribeSourceJob(payload: ClipProcessJobData) {
     await assertJobNotCanceled(payload.jobId);
     startJobCancellationWatcher(payload.jobId);
@@ -1810,7 +1860,7 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
         }
 
         const request = job.payloadJson as unknown as CreateJobRequest;
-        const isScoped = request.startTime !== undefined && request.endTime !== undefined;
+        const isRetry = Boolean(request.sourceJobId);
 
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
         const jobRoot = getJobRoot(job.sessionId, job.id);
@@ -1818,28 +1868,25 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
 
         await mkdir(jobRoot, { recursive: true });
 
-        // Deliberately NOT fade-widened: this transcribes exactly the marked
-        // [startTime, endTime] the user selected, so its cue times are 0-based
-        // relative to startTime — matching what the frontend already has
-        // locally, with no extra offset to communicate back for correct
-        // cue-jump/highlight behavior against the (full-source) preview
-        // player. The burn-in step (processGeneralClipJob) independently
-        // recomputes its own fade window and re-offsets these same cues by
-        // its fadeInSeconds when placing them in the final (possibly padded)
-        // output — see the buildAssFromVtt call there.
-        let extractWindow: { start: number; duration: number } | undefined;
-        let scopedDuration = 0;
-
-        if (isScoped) {
-            scopedDuration = request.endTime - request.startTime;
-            extractWindow = { start: request.startTime, duration: scopedDuration };
+        let retrySourceJobId = "";
+        let sourceVideoPath = job.asset.sourcePath;
+        if (isRetry) {
+            const sourceJob = await prisma.job.findFirst({
+                where: { id: request.sourceJobId, sessionId: job.sessionId },
+                include: { result: true },
+            });
+            if (!sourceJob?.result?.videoPath) {
+                throw new Error("The video to transcribe was not found or has no finished video yet");
+            }
+            retrySourceJobId = sourceJob.id;
+            sourceVideoPath = sourceJob.result.videoPath;
         }
 
-        // Scoped: job-local, never touches the asset. Unscoped: stored next to
-        // the asset source so it survives this transient job and is reused by
-        // every short of this asset.
-        const transcriptPath = isScoped
-            ? join(jobRoot, "clip-transcript.vtt")
+        // Retry: stored on the source job's OWN Result row. Default: stored
+        // next to the asset source so it survives this transient job and is
+        // reused by every short of this asset.
+        const transcriptPath = isRetry
+            ? join(jobRoot, "transcript.vtt")
             : join(dirname(job.asset.sourcePath), "transcript.vtt");
 
         await enqueueProgressWrite(job.id, {
@@ -1850,10 +1897,10 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             stageProgress: 0,
             overallProgress: 5,
             transcriptProgress: 0,
-            message: isScoped ? "Extracting clip audio for transcription" : "Extracting audio for transcription",
+            message: "Extracting audio for transcription",
         });
 
-        await extractAudioForTranscription(job.id, job.asset.sourcePath, workingAudioPath, extractWindow);
+        await extractAudioForTranscription(job.id, sourceVideoPath, workingAudioPath);
 
         await assertJobNotCanceled(job.id);
         await enqueueProgressWrite(job.id, {
@@ -1862,7 +1909,7 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             stageProgress: 10,
             overallProgress: 20,
             transcriptProgress: 0,
-            message: isScoped ? "Transcribing clip audio" : "Transcribing source audio",
+            message: "Transcribing audio",
         });
 
         let producedTranscript: string | null = null;
@@ -1881,18 +1928,13 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
         await assertJobNotCanceled(job.id);
 
         if (!producedTranscript) {
-            throw new Error(isScoped
-                ? "Transcription produced no transcript for this clip"
-                : "Transcription produced no transcript for the source video");
+            throw new Error("Transcription produced no transcript for the video");
         }
 
-        if (isScoped) {
-            const expiresAt = new Date();
-            expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
-            await prisma.result.upsert({
-                where: { jobId: job.id },
-                update: { sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedDuration, expiresAt },
-                create: { jobId: job.id, sessionId: job.sessionId, transcriptPath: producedTranscript, duration: scopedDuration, expiresAt },
+        if (isRetry) {
+            await prisma.result.update({
+                where: { jobId: retrySourceJobId },
+                data: { transcriptPath: producedTranscript },
             });
         }
         else {
@@ -1910,7 +1952,7 @@ async function processTranscribeSourceJob(payload: ClipProcessJobData) {
             stageProgress: 100,
             overallProgress: 100,
             transcriptProgress: 100,
-            message: isScoped ? "Clip transcript ready" : "Source transcript ready",
+            message: "Transcript ready",
         });
     }
     finally {
@@ -2168,61 +2210,51 @@ async function processShortJob(payload: ClipProcessJobData) {
     }
 }
 
-// clip: the general-purpose pipeline. Trim [startTime, endTime] keeping the
-// source's own resolution and aspect ratio, optionally burn standard subtitles
-// from the (already reviewed) asset transcript, and optionally fade to and from
-// black at both ends. One MP4, no MP3, no end card, no SermonGuide delivery.
-// clip: the general-purpose pipeline. Trim [startTime, endTime] keeping the
-// source's own resolution and aspect ratio, optionally cut gaps out of that
-// selection (clipStarts/clipEnds — see getSegments), optionally burn standard
-// subtitles from the (already reviewed) captionsVtt, and optionally fade to
-// and from black at both ends. One MP4, no MP3, no end card, no SermonGuide
-// delivery.
-//
-// Multi-segment (gaps present) works exactly like the sermon pipeline's own
-// multi-segment concat: each KEPT segment (from getSegments) becomes its own
-// ffmpeg -i of the same source, individually filtered (captions burned + fade
-// applied, only where relevant — see below), then joined with the `concat`
-// filter (not the demuxer — this lets each segment carry its own
-// filter_complex chain). A single segment (the common, no-gaps case) is just
-// the n=1 case of the exact same code path — no separate fast path to keep in
-// sync.
-//
-// Only the FIRST segment ever fades in, and only the LAST ever fades out —
-// interior segments (between two gaps) always play straight through
-// unfaded, matching how a real edit would only bookend the very start/end of
-// the finished piece, not every cut. When there's only one segment, first ===
-// last, so both sides apply — identical to the original single-segment
-// behavior.
-async function processGeneralClipJob(payload: ClipProcessJobData) {
+// burnSubtitles: take an EXISTING completed job's finished video
+// (sourceJobId's Result.videoPath) and burn in the reviewed transcript
+// (request.captionsVtt) as standard subtitles, producing a NEW derived video
+// as its own Job/Result — the source job's own video is never touched. No
+// trimming, no fade, no segments: those decisions already happened when the
+// source job was rendered, so this is a single, simple pass. The transcript
+// is already 0-based against that exact video (see
+// processTranscribeSourceJob's retry mode, or processClipJob's own
+// post-render transcription) so no offset math is needed — just slice/rebase
+// with clipStart=0. Audio is stream-copied, not re-encoded, since only the
+// video stream changes.
+async function processBurnSubtitlesJob(payload: ClipProcessJobData) {
     await assertJobNotCanceled(payload.jobId);
     startJobCancellationWatcher(payload.jobId);
 
     try {
-        const job = await prisma.job.findUnique({
-            where: { id: payload.jobId },
-            include: { asset: true },
-        });
+        const job = await prisma.job.findUnique({ where: { id: payload.jobId } });
 
         if (!job) {
             throw new Error(`Job ${payload.jobId} not found`);
         }
 
         const request = job.payloadJson as unknown as CreateJobRequest;
-        const markedDuration = getDurationSeconds(request.startTime, request.endTime);
 
-        if (!Number.isFinite(markedDuration) || markedDuration <= 0) {
-            throw new Error("A clip requires a positive [startTime, endTime] range");
+        if (!request.sourceJobId) {
+            throw new Error("Cannot burn in subtitles: no source video was specified");
+        }
+        if (!request.captionsVtt?.trim()) {
+            throw new Error("Cannot burn in subtitles: no reviewed transcript was provided with this job");
         }
 
-        const segments = getSegments(request);
-        if (segments.length === 0) {
-            throw new Error("A clip requires at least one segment after removing the cut gaps");
+        const sourceJob = await prisma.job.findFirst({
+            where: { id: request.sourceJobId, sessionId: job.sessionId },
+            include: { result: true },
+        });
+
+        if (!sourceJob?.result?.videoPath) {
+            throw new Error("The video to caption was not found or has no finished video yet");
         }
 
+        const sourceVideoPath = sourceJob.result.videoPath;
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
         const jobRoot = getJobRoot(job.sessionId, job.id);
-        const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "clip-video");
+        const assFilePath = join(jobRoot, "captions.ass");
+        const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "captioned-video");
         const outputVideoPath = join(jobRoot, outputVideoFilename);
 
         await mkdir(jobRoot, { recursive: true });
@@ -2233,86 +2265,21 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             stage: JobStage.extractClips,
             stageProgress: 0,
             overallProgress: 5,
-            message: "Preparing clip",
+            message: "Preparing to burn in subtitles",
         });
 
-        const media = await detectMediaProperties(job.id, job.asset.sourcePath);
-
-        // Probe the source's real duration fresh (don't trust a possibly-stale
-        // Asset.duration column) — detectOutputDuration is a generic
-        // ffprobe-duration helper despite its name, and works identically
-        // against any media path, not just a job's own output. Shared by every
-        // segment's own fade-out clamp.
-        const sourceDuration = (await detectOutputDuration(job.id, job.asset.sourcePath))
-            ?? job.asset.duration
-            ?? request.endTime;
-
-        const wantFade = request.fade === true;
-        const wantCaptions = request.captions === true;
-
-        if (wantCaptions) {
-            if (!(await canBurnCaptions())) {
-                throw new Error("Cannot burn in subtitles: this worker's FFmpeg has no libass support");
-            }
-            if (!request.captionsVtt?.trim()) {
-                throw new Error("Cannot burn in subtitles: no reviewed transcript was provided with this job");
-            }
+        if (!(await canBurnCaptions())) {
+            throw new Error("Cannot burn in subtitles: this worker's FFmpeg has no libass support");
         }
 
-        // Resolve each segment's own (possibly fade-widened) window, and — if
-        // captions are on — its own slice of the transcript, sliced/rebased in
-        // the TRANSCRIPT's coordinate system (0-based from request.startTime,
-        // since captionsVtt was produced by a scoped transcribeSource job
-        // given this same startTime/endTime — see that job's own comment) and
-        // written to its own .ass file so it can be burned into that segment's
-        // own individually-encoded stream. Only the first segment's clipStart
-        // shifts by -fadeInSeconds, for the same reason the single-segment
-        // design did: its own video read starts that much earlier once padded,
-        // and buildAssFromVtt's clipStart is subtracted from every cue's time.
-        const assFilePaths: (string | undefined)[] = [];
-        const windows = segments.map((segment, index) => {
-            const isFirst = index === 0;
-            const isLast = index === segments.length - 1;
-            return resolveClipWindow(
-                segment.startTime,
-                segment.endTime,
-                sourceDuration,
-                wantFade && isFirst,
-                wantFade && isLast,
-                CLIP_FADE_SECONDS,
-            );
-        });
+        const media = await detectMediaProperties(job.id, sourceVideoPath);
+        const sourceDuration = (await detectOutputDuration(job.id, sourceVideoPath)) ?? sourceJob.result.duration ?? 0;
 
-        let totalCueCount = 0;
-        if (wantCaptions) {
-            const style = landscapeCaptionStyle(media.width, media.height);
-            for (const [index, segment] of segments.entries()) {
-                const window = windows[index];
-                const segTranscriptStart = segment.startTime - request.startTime;
-                const segTranscriptEnd = segment.endTime - request.startTime;
-                const clipStart = index === 0 ? segTranscriptStart - window.fadeInSeconds : segTranscriptStart;
-                const ass = buildAssFromVtt(request.captionsVtt!, clipStart, segTranscriptEnd, style);
-                totalCueCount += ass.cueCount;
-                if (ass.cueCount > 0) {
-                    const assPath = join(jobRoot, `captions-${index}.ass`);
-                    await writeFile(assPath, ass.content);
-                    assFilePaths.push(assPath);
-                }
-                else {
-                    assFilePaths.push(undefined);
-                }
-            }
-            if (totalCueCount === 0) {
-                throw new Error("Cannot burn in subtitles: the transcript has no lines in this range");
-            }
+        const ass = buildAssFromVtt(request.captionsVtt, 0, sourceDuration, landscapeCaptionStyle(media.width, media.height));
+        if (ass.cueCount === 0) {
+            throw new Error("Cannot burn in subtitles: the transcript has no lines");
         }
-        else {
-            segments.forEach(() => assFilePaths.push(undefined));
-        }
-
-        const fadeNote = wantFade && windows[0].fadeInSeconds === 0 && windows[windows.length - 1].fadeOutSeconds === 0
-            ? "fade skipped: not enough surrounding footage"
-            : "";
+        await writeFile(assFilePath, ass.content);
 
         await assertJobNotCanceled(job.id);
         await enqueueProgressWrite(job.id, {
@@ -2321,68 +2288,30 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             stageProgress: 0,
             overallProgress: 15,
             videoProgress: 5,
-            message: totalCueCount > 0 ? "Encoding clip with captions" : "Encoding clip",
+            message: "Burning in subtitles",
         });
-
-        // One -i per kept segment (same source file, different -ss/-t each
-        // time — entirely standard). Each becomes its own labeled filter chain
-        // (captions + fade, from the existing single-segment helpers, plus the
-        // pts/timebase/fps normalization concatenation needs — mirroring
-        // renderConcatenatedVideoArtifact's proven pattern for the sermon
-        // pipeline), then joined with the `concat` filter.
-        const args = ["-hide_banner", "-y"];
-        for (const window of windows) {
-            const duration = window.effectiveEnd - window.effectiveStart;
-            args.push("-ss", String(window.effectiveStart), "-t", String(duration), "-i", job.asset.sourcePath);
-        }
-
-        const filterParts: string[] = [];
-        const videoLabels: string[] = [];
-        const audioLabels: string[] = [];
-
-        windows.forEach((window, index) => {
-            const videoChain = buildClipVideoFilter({ window, assFilePath: assFilePaths[index] });
-            filterParts.push(`[${index}:v]${videoChain},settb=AVTB,setpts=PTS-STARTPTS,fps=${defaultFps}[v${index}]`);
-            videoLabels.push(`[v${index}]`);
-
-            if (media.hasAudio) {
-                const audioChain = buildClipAudioFilter(window);
-                const achain = [audioChain, "asetpts=PTS-STARTPTS"].filter(Boolean).join(",");
-                filterParts.push(`[${index}:a]${achain}[a${index}]`);
-                audioLabels.push(`[a${index}]`);
-            }
-        });
-
-        if (media.hasAudio) {
-            const interleaved = segments.map((_, index) => `${videoLabels[index]}${audioLabels[index]}`).join("");
-            filterParts.push(`${interleaved}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
-        }
-        else {
-            filterParts.push(`${videoLabels.join("")}concat=n=${segments.length}:v=1:a=0[outv]`);
-        }
-
-        args.push("-filter_complex", filterParts.join(";"), "-map", "[outv]");
-        if (media.hasAudio) {
-            args.push("-map", "[outa]");
-        }
-        args.push(
-            ...getVideoEncodingArgs(effectiveHardware),
-            ...(media.hasAudio ? ["-c:a", "aac"] : ["-an"]),
-            "-movflags",
-            "+faststart",
-            outputVideoPath,
-        );
-
-        const totalEffectiveDuration = windows.reduce((sum, window) => sum + (window.effectiveEnd - window.effectiveStart), 0);
 
         try {
-            await runFfmpeg(job.id, args, {
-                totalDurationSec: totalEffectiveDuration,
+            await runFfmpeg(job.id, [
+                "-hide_banner",
+                "-y",
+                "-i",
+                sourceVideoPath,
+                "-vf",
+                `ass=${escapeAssPathForFilter(assFilePath)}`,
+                ...getVideoEncodingArgs(effectiveHardware),
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+                outputVideoPath,
+            ], {
+                totalDurationSec: sourceDuration,
                 onProgress: createBandReporter(job.id, "videoProgress", 5, 100),
             });
         }
         finally {
-            await Promise.all(assFilePaths.map((assPath) => (assPath ? rm(assPath, { force: true }) : Promise.resolve())));
+            await rm(assFilePath, { force: true });
         }
 
         await assertJobNotCanceled(job.id);
@@ -2432,7 +2361,7 @@ async function processGeneralClipJob(payload: ClipProcessJobData) {
             stageProgress: 100,
             overallProgress: 100,
             videoProgress: 100,
-            message: fadeNote.length > 0 ? `Clip ready (${fadeNote})` : "Clip ready",
+            message: "Captioned video ready",
         });
     }
     finally {
@@ -2462,8 +2391,8 @@ async function dispatchJob(payload: ClipProcessJobData) {
         return;
     }
 
-    if (kind === "clip") {
-        await processGeneralClipJob(payload);
+    if (kind === "burnSubtitles") {
+        await processBurnSubtitlesJob(payload);
         return;
     }
 

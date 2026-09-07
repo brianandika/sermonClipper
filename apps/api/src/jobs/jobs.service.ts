@@ -26,8 +26,8 @@ function normalizeResultPath(path: string | null) {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-// Shared by "sermon" and "clip": clipStarts/clipEnds describe GAPS to cut out
-// of [startTime, endTime] — the kept output is everything between them,
+// "sermon"'s clipStarts/clipEnds describe GAPS to cut out of
+// [startTime, endTime] — the kept output is everything between them,
 // concatenated (see the worker's getSegments). Both arrays must be provided
 // together, equal length, ordered, non-overlapping, and inside the range.
 function validateClipGaps(payload: Pick<CreateJobDto, "startTime" | "endTime" | "clipStarts" | "clipEnds">) {
@@ -99,50 +99,16 @@ function validateShortRange(payload: CreateJobDto) {
     }
 }
 
-// A general clip needs a positive, ordered range — no length cap (unlike a
-// short) — and may optionally cut gaps out of it, same rules as a sermon
-// (see validateClipGaps), just without the intro/transition checks.
-function validateGeneralClipRange(payload: CreateJobDto) {
-    if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
-        throw new BadRequestException("startTime and endTime are required");
+// "burnSubtitles" always needs both — no meaningful default for either.
+function validateBurnSubtitlesRequest(payload: CreateJobDto) {
+    if (!payload.sourceJobId?.trim()) {
+        throw new BadRequestException("Burning in subtitles requires sourceJobId");
     }
-    if (payload.startTime < 0) {
-        throw new BadRequestException("startTime must be >= 0");
+    if (!payload.captionsVtt?.trim()) {
+        throw new BadRequestException(
+            "Burning in subtitles requires a reviewed transcript. Prepare and review the transcript first.",
+        );
     }
-    if (payload.startTime >= payload.endTime) {
-        throw new BadRequestException("startTime must be less than endTime");
-    }
-    validateClipGaps(payload);
-}
-
-// transcribeSource's startTime/endTime are optional (absent = transcribe the
-// whole source, the original Shorts-prep behaviour) but if either is present,
-// both must be, and ordered. Used to scope transcription to a "clip" export's
-// own range instead of the whole video.
-function validateOptionalTranscribeRange(payload: CreateJobDto) {
-    const hasStart = payload.startTime !== undefined;
-    const hasEnd = payload.endTime !== undefined;
-    if (!hasStart && !hasEnd) {
-        return;
-    }
-    if (hasStart !== hasEnd) {
-        throw new BadRequestException("startTime and endTime must be provided together");
-    }
-    if (!Number.isFinite(payload.startTime) || !Number.isFinite(payload.endTime)) {
-        throw new BadRequestException("startTime and endTime must be numbers");
-    }
-    if (payload.startTime < 0) {
-        throw new BadRequestException("startTime must be >= 0");
-    }
-    if (payload.startTime >= payload.endTime) {
-        throw new BadRequestException("startTime must be less than endTime");
-    }
-}
-
-// A scoped (clip-window) transcribeSource request always carries its own
-// startTime — used to key idempotency separately per range (see create()).
-function isScopedTranscribeRequest(payload: CreateJobDto): boolean {
-    return payload.startTime !== undefined || payload.endTime !== undefined;
 }
 
 @Injectable()
@@ -153,17 +119,36 @@ export class JobsService {
         private readonly jobHardwareService: JobHardwareService,
     ) { }
 
+    // Verifies sourceJobId belongs to this session and already has a finished
+    // video — shared by transcribeSource's retry mode and burnSubtitles, both
+    // of which operate on another job's Result.videoPath rather than a fresh
+    // upload. Throws a clear 400/404 here instead of letting the worker fail
+    // on it later.
+    private async requireOwnedVideoJob(sessionId: string, sourceJobId: string) {
+        const sourceJob = await this.prisma.job.findFirst({
+            where: { id: sourceJobId, sessionId },
+            include: { result: true },
+        });
+        if (!sourceJob) {
+            throw new NotFoundException("Source job not found");
+        }
+        if (!sourceJob.result?.videoPath) {
+            throw new BadRequestException("Source job has no finished video yet");
+        }
+        return sourceJob;
+    }
+
     async create(sessionId: string, assetId: string, payload: CreateJobDto) {
         const kind = payload.kind ?? "sermon";
 
-        // Idempotency: never queue a second transcription for a source that is
+        // Idempotency: never queue a second transcription for a video that is
         // already being transcribed. Re-mounting the Shorts tab or double-clicks
-        // return the in-flight job instead of piling up duplicates. Only applies
-        // to the legacy whole-source prep (no startTime/endTime) — a scoped,
-        // per-clip transcription is cheap and always fresh, and different clip
-        // ranges on the same asset must never dedupe against each other.
-        if (kind === "transcribeSource" && !isScopedTranscribeRequest(payload)) {
-            const activeTranscription = await this.prisma.job.findFirst({
+        // return the in-flight job instead of piling up duplicates. Keyed by
+        // sourceJobId too, so the default (whole-asset) mode and a "retry
+        // transcript for job X" request never dedupe against each other, and
+        // retries for two different jobs don't collide either.
+        if (kind === "transcribeSource") {
+            const activeTranscriptions = await this.prisma.job.findMany({
                 where: {
                     sessionId,
                     assetId,
@@ -181,8 +166,13 @@ export class JobsService {
                 orderBy: { createdAt: "desc" },
             });
 
-            if (activeTranscription) {
-                return activeTranscription;
+            const match = activeTranscriptions.find((candidate) => {
+                const candidatePayload = candidate.payloadJson as { sourceJobId?: string } | null;
+                return (candidatePayload?.sourceJobId ?? null) === (payload.sourceJobId ?? null);
+            });
+
+            if (match) {
+                return match;
             }
         }
 
@@ -192,21 +182,12 @@ export class JobsService {
         else if (kind === "short") {
             validateShortRange(payload);
         }
-        else if (kind === "clip") {
-            validateGeneralClipRange(payload);
-
-            // Burned-in subtitles are blocking for this kind: a reviewed
-            // transcript for this exact clip must already be attached to the
-            // request (produced by a scoped transcribeSource job the client
-            // ran first) — not just present anywhere on the asset.
-            if (payload.captions === true && !payload.captionsVtt?.trim()) {
-                throw new BadRequestException(
-                    "Burning in subtitles requires a reviewed transcript. Prepare and review the transcript for this clip first.",
-                );
-            }
+        else if (kind === "burnSubtitles") {
+            validateBurnSubtitlesRequest(payload);
+            await this.requireOwnedVideoJob(sessionId, payload.sourceJobId!);
         }
-        else if (kind === "transcribeSource") {
-            validateOptionalTranscribeRange(payload);
+        else if (kind === "transcribeSource" && payload.sourceJobId) {
+            await this.requireOwnedVideoJob(sessionId, payload.sourceJobId);
         }
 
         const requestedHardware = (payload.hardware ?? HardwareOption.auto) as HardwareOption;

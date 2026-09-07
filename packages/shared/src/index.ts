@@ -110,13 +110,12 @@ export interface SuggestShortsResponse {
 
 // Discriminates the worker pipelines. Absent ⇒ "sermon" (the original
 // landscape trim/cut flow), preserving backward compatibility with existing jobs.
-export type JobKind = "sermon" | "transcribeSource" | "short" | "clip";
+export type JobKind = "sermon" | "transcribeSource" | "short" | "burnSubtitles";
 
-// Seconds of fade-to-black requested at each end of a general clip when `fade`
-// is on. The actual applied fade is clamped per edge by how much real source
-// footage exists before startTime / after endTime — see
-// apps/worker/src/clip-filters.ts.
-export const CLIP_FADE_SECONDS = 3;
+// Default and max for "sermon"'s configurable fade-in/out length
+// (CreateJobRequest.fadeSeconds).
+export const DEFAULT_FADE_SECONDS = 1;
+export const MAX_FADE_SECONDS = 5;
 
 export interface CreateJobRequest {
     kind?: JobKind;
@@ -139,8 +138,7 @@ export interface CreateJobRequest {
     cropY?: number;
     zoom?: number;
     // "short": burn captions unless explicitly false (best-effort — degrades to
-    // no captions). "clip": burn captions only when explicitly true, and the API
-    // rejects the job if the asset has no transcript.
+    // no captions).
     captions?: boolean;
     // "short" only: append the church end card (a branded 9:16 image) after the
     // clip, with a quick crossfade into it and a 3s hold. Default true.
@@ -152,17 +150,27 @@ export interface CreateJobRequest {
     // "sermon" only: when true (the default), the worker delivers the finished VTT
     // transcript to the configured SermonGuide inbox. Users can opt out per job.
     deliverTranscript?: boolean;
-    // "clip" only: extend the output by up to CLIP_FADE_SECONDS on each end,
-    // pulling in adjacent source footage and fading it from/to black. The
-    // marked [startTime, endTime] itself is never dimmed or shortened. Default
-    // false. Each side is independently clamped to whatever real footage
-    // exists before startTime / after endTime.
-    fade?: boolean;
-    // "clip" only, required when captions === true: the reviewed WebVTT text
-    // to burn in, already scoped and 0-based to this clip's own effective
-    // (fade-widened) window — produced by a "transcribeSource" job that was
-    // itself given this same startTime/endTime/fade (see below). The API
-    // rejects the job if captions is true and this is missing/empty.
+    // "sermon" only: fade the composed output in/out (both audio and video),
+    // this many seconds at each end. 0 = no fade. Default DEFAULT_FADE_SECONDS
+    // (1s — the original, previously-unconditional behavior), max
+    // MAX_FADE_SECONDS. Dims the output's own existing first/last frames —
+    // does not extend the output's length or read outside [startTime, endTime].
+    fadeSeconds?: number;
+    // "sermon" only: by default every output is scaled/padded to a standard
+    // 1920x1080 canvas. Set true to skip that and keep the source's own
+    // resolution/aspect ratio instead (every segment — and the intro image,
+    // if any — still shares one consistent size for clean concatenation;
+    // that size is just the source's own rather than a forced 1080p).
+    preserveAspectRatio?: boolean;
+    // "transcribeSource" (retry mode) and "burnSubtitles": the OTHER job whose
+    // finished Result.videoPath this one operates on — transcribing it (if it
+    // has no transcript yet) or burning captions into a new derived copy of
+    // it. Must belong to the same session and already have a finished video.
+    sourceJobId?: string;
+    // "burnSubtitles" only, required: the reviewed WebVTT text to burn in,
+    // already 0-based against sourceJobId's own finished video (produced by
+    // transcribing that exact video — see processTranscribeSourceJob's retry
+    // mode). The API rejects the job if this is missing/empty.
     captionsVtt?: string;
 }
 
