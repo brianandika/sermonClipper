@@ -3,12 +3,22 @@ import { bootstrapSession, createShortsSourceFromJob, createTranscribeJob, getAs
 import UploadFlow from './components/UploadFlow';
 import EditorFlow from './components/EditorFlow';
 import ShortsFlow from './components/ShortsFlow';
+import SubtitlesFlow from './components/SubtitlesFlow';
 import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
 import TranscribeResultsFlow from './components/TranscribeResultsFlow';
-import { Asset, Job, Result, Session } from './types';
+import { Asset, Job, Result, Session, SubtitlesDraft } from './types';
 
-type AppFlow = 'upload' | 'editor' | 'shorts' | 'jobs' | 'results';
+function createSubtitlesDraft(sourceJobId: string): SubtitlesDraft {
+  return {
+    sourceJobId,
+    cues: [],
+    cuesLoaded: false,
+    prepJobId: null,
+  };
+}
+
+type AppFlow = 'upload' | 'editor' | 'shorts' | 'subtitles' | 'jobs' | 'results';
 
 interface NavItem {
   key: AppFlow;
@@ -31,6 +41,13 @@ function App() {
   // job (reuse path) or the transcribe job (standalone-upload-for-shorts path).
   const [shortsParentJobId, setShortsParentJobId] = useState<string | null>(null);
   const [shortsBusy, setShortsBusy] = useState(false);
+  // Subtitles source job + its draft (loaded/edited transcript, in-flight
+  // prepare job), lifted for the same reason as the Shorts state above.
+  const [subtitlesSourceJob, setSubtitlesSourceJob] = useState<Job | null>(null);
+  const [subtitlesDraft, setSubtitlesDraft] = useState<SubtitlesDraft | null>(null);
+  const patchSubtitlesDraft = (patch: Partial<SubtitlesDraft>) => {
+    setSubtitlesDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
   // Asset backing a transcribe-only "View Result" page (no Result row exists for
   // transcribeSource jobs — the video + transcript come straight from the asset).
   const [transcribeAsset, setTranscribeAsset] = useState<Asset | null>(null);
@@ -74,6 +91,14 @@ function App() {
     } catch (err) {
       setError(`Could not start transcription: ${err}`);
     }
+  };
+
+  // Open the Subtitles tab for a completed sermon job — from either the Jobs
+  // list or the Results page's "Add Subtitles" action.
+  const openSubtitlesForJob = (sourceJob: Job) => {
+    setSubtitlesSourceJob(sourceJob);
+    setSubtitlesDraft(createSubtitlesDraft(sourceJob.jobId));
+    setFlow('subtitles');
   };
 
   // Open a transcribe-only job's result page: the uploaded video + its transcript
@@ -153,6 +178,8 @@ function App() {
     setShortsSource(null);
     setShortsPrepJobId(null);
     setShortsParentJobId(null);
+    setSubtitlesSourceJob(null);
+    setSubtitlesDraft(null);
     setTranscribeAsset(null);
     setFlow('upload');
   };
@@ -186,6 +213,12 @@ function App() {
       description: shortsSource ? 'Make 9:16 vertical clips' : 'Open from a job or result',
       disabled: !shortsSource,
     },
+    {
+      key: 'subtitles',
+      label: 'Subtitles',
+      description: subtitlesSourceJob ? 'Review and burn in captions' : 'Open from a job or result',
+      disabled: !subtitlesSourceJob,
+    },
   ];
 
   const pendingFlowLabel = navItems.find((item) => item.key === pendingFlow)?.label ?? 'another page';
@@ -200,6 +233,11 @@ function App() {
     // Shorts is only reachable via a job's "Shorts" action or a result page's
     // "Open Shorts" — never by clicking the tab with no source.
     if (nextFlow === 'shorts' && !shortsSource) {
+      return;
+    }
+    // Subtitles is only reachable via a job's "Add Subtitles" action — never
+    // by clicking the tab with no source.
+    if (nextFlow === 'subtitles' && (!subtitlesSourceJob || !subtitlesDraft)) {
       return;
     }
     setFlow(nextFlow);
@@ -283,7 +321,12 @@ function App() {
           </nav>
         </header>
 
-        {flow === 'upload' && <UploadFlow onSuccess={handleUploadSuccess} onUploadForShorts={handleUploadForShorts} />}
+        {flow === 'upload' && (
+          <UploadFlow
+            onSuccess={handleUploadSuccess}
+            onUploadForShorts={handleUploadForShorts}
+          />
+        )}
         {flow === 'editor' && asset && (
           <EditorFlow asset={asset} onSuccess={handleEditorSuccess} onCancel={handleEditorCancel} />
         )}
@@ -296,11 +339,18 @@ function App() {
             parentJobId={shortsParentJobId}
           />
         )}
+        {flow === 'subtitles' && subtitlesSourceJob && subtitlesDraft && (
+          <SubtitlesFlow
+            sourceJob={subtitlesSourceJob}
+            draft={subtitlesDraft}
+            onDraftChange={patchSubtitlesDraft}
+          />
+        )}
         {flow === 'jobs' && (
-          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onOpenShorts={openShortsForJob} onViewTranscribeResult={handleOpenTranscribeResult} shortsBusy={shortsBusy} onReset={handleReset} />
+          <JobsFlow currentSessionId={session?.sessionId ?? null} activeJobId={activeJobId} onOpenResult={handleOpenResult} onOpenShorts={openShortsForJob} onViewTranscribeResult={handleOpenTranscribeResult} onAddSubtitles={openSubtitlesForJob} shortsBusy={shortsBusy} onReset={handleReset} />
         )}
         {flow === 'results' && job && result && (
-          <ResultsFlow result={result} job={job} onCreateShorts={openShortsForJob} shortsBusy={shortsBusy} />
+          <ResultsFlow result={result} job={job} onCreateShorts={openShortsForJob} onAddSubtitles={openSubtitlesForJob} shortsBusy={shortsBusy} />
         )}
         {flow === 'results' && job && !result && transcribeAsset && (
           <TranscribeResultsFlow job={job} asset={transcribeAsset} onOpenShorts={openShortsForJob} shortsBusy={shortsBusy} />

@@ -6,6 +6,7 @@ interface ResultsFlowProps {
   job: Job;
   result: Result;
   onCreateShorts: (job: Job) => void;
+  onAddSubtitles: (job: Job) => void;
   shortsBusy: boolean;
 }
 
@@ -37,7 +38,7 @@ function getRequestedBaseName(job: Job): string | undefined {
   return trimmed.replace(/\.[^.]+$/, '');
 }
 
-export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }: ResultsFlowProps) {
+export default function ResultsFlow({ job, result, onCreateShorts, onAddSubtitles, shortsBusy }: ResultsFlowProps) {
   const [currentJob, setCurrentJob] = useState(job);
   const [currentResult, setCurrentResult] = useState(result);
 
@@ -128,6 +129,18 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
           </div>
           <button type="button" className="btn" disabled={shortsBusy} onClick={() => onCreateShorts(currentJob)}>
             {shortsBusy ? 'Opening…' : 'Open Shorts'}
+          </button>
+        </div>
+      )}
+
+      {currentJob.status === 'completed' && Boolean(currentResult.videoPath) && (currentJob.payload.kind ?? 'sermon') === 'sermon' && (
+        <div className="results-shorts-cta">
+          <div>
+            <p className="results-shorts-cta-title">💬 Add burned-in subtitles</p>
+            <p className="results-shorts-cta-copy">Review the transcript, then burn it into a new copy of this video.</p>
+          </div>
+          <button type="button" className="btn" style={{ background: '#7c3aed' }} onClick={() => onAddSubtitles(currentJob)}>
+            Add Subtitles
           </button>
         </div>
       )}

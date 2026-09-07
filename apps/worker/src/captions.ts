@@ -142,17 +142,18 @@ export const CAPTION_MAX_CHARS_PER_LINE = 22;
 export const CAPTION_PREFERRED_LINES = 2;
 export const CAPTION_MAX_LINES = 3;
 
-// Flatten a cue's text to a single upper-case line: strip inline tags, collapse
+// Flatten a cue's text to a single line: strip inline tags, collapse
 // whitespace, neutralize "{...}" override delimiters. Word-wrapping is applied
-// separately so we control the exact line count.
-export function normalizeCaptionText(raw: string): string {
-    return raw
+// separately so we control the exact line count. Uppercased by default (the
+// punchy shorts look); pass uppercase=false for standard-looking subtitles.
+export function normalizeCaptionText(raw: string, uppercase = true): string {
+    const cleaned = raw
         .replace(/<[^>]*>/g, "")
         .replace(/\{/g, "(")
         .replace(/\}/g, ")")
         .replace(/\s+/g, " ")
-        .trim()
-        .toUpperCase();
+        .trim();
+    return uppercase ? cleaned.toUpperCase() : cleaned;
 }
 
 // Greedily word-wrap a flat string into lines no longer than maxCharsPerLine.
@@ -238,26 +239,82 @@ export function formatAssTime(totalSeconds: number): string {
     return `${hours}:${mm}:${ss}.${cc}`;
 }
 
-const ASS_HEADER = [
-    "[Script Info]",
-    "ScriptType: v4.00+",
-    "PlayResX: 1080",
-    "PlayResY: 1920",
-    // WrapStyle 0 = smart auto-wrapping, so long lines wrap instead of running
-    // off the sides of the frame.
-    "WrapStyle: 0",
-    "ScaledBorderAndShadow: yes",
-    "",
-    "[V4+ Styles]",
-    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    // Bold white text, thick black outline + drop shadow, bottom-centered.
-    // Wide L/R margins keep text off the edges; MarginV=560 sits the block in
-    // the lower third of the 1920-tall frame.
-    "Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,90,90,560,1",
-    "",
-    "[Events]",
-    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-].join("\n");
+export interface AssStyleOptions {
+    playResX: number;
+    playResY: number;
+    fontSize: number;
+    marginLR: number;
+    marginV: number;
+    // Outline (stroke) and drop-shadow thickness, in the same units as
+    // fontSize. Shorts uses a thick, punchy outline on purpose; a landscape
+    // clip wants a much thinner, conventional-subtitle stroke — a thick one
+    // at this font size reads as "bubbly" (letters look blobby, especially at
+    // small point sizes and on curved glyphs).
+    outline: number;
+    shadow: number;
+    // Word-wrap width and case behavior for chunkCaptions/normalizeCaptionText.
+    maxCharsPerLine: number;
+    uppercase: boolean;
+}
+
+// The existing shorts look: 1080x1920, 64pt, bottom third, punchy uppercase
+// captions wrapped tight (right for a narrow vertical frame), thick outline.
+export const SHORT_CAPTION_STYLE: AssStyleOptions = {
+    playResX: 1080,
+    playResY: 1920,
+    fontSize: 64,
+    marginLR: 90,
+    marginV: 560,
+    outline: 5,
+    shadow: 2,
+    maxCharsPerLine: CAPTION_MAX_CHARS_PER_LINE,
+    uppercase: true,
+};
+
+// Standard subtitles for a landscape clip at the source's own resolution: text
+// sized as a fraction of frame height so it reads the same on 720p and 4K,
+// sat just above the bottom edge like conventional burned-in subs, wrapped
+// wider (a landscape frame has much more horizontal room than a 9:16 short),
+// left in natural case rather than shouted uppercase, and a thin outline —
+// scaled off THIS style's own fontSize, not shorts' fixed 64pt, so it stays
+// proportionally crisp at any resolution rather than looking bubbly.
+export function landscapeCaptionStyle(width: number, height: number): AssStyleOptions {
+    const fontSize = Math.max(16, Math.round(height * 0.045));
+    return {
+        playResX: Math.max(2, Math.round(width)),
+        playResY: Math.max(2, Math.round(height)),
+        fontSize,
+        marginLR: Math.round(width * 0.06),
+        marginV: Math.round(height * 0.06),
+        outline: Math.max(1, Math.round(fontSize * 0.045)),
+        shadow: Math.max(0, Math.round(fontSize * 0.012)),
+        maxCharsPerLine: 42,
+        uppercase: false,
+    };
+}
+
+function buildAssHeader(style: AssStyleOptions): string {
+    return [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        `PlayResX: ${style.playResX}`,
+        `PlayResY: ${style.playResY}`,
+        // WrapStyle 0 = smart auto-wrapping, so long lines wrap instead of running
+        // off the sides of the frame.
+        "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        // Bold white text, black outline + drop shadow, bottom-centered. Wide
+        // L/R margins keep text off the edges; MarginV sits the block just
+        // above the bottom edge.
+        `Style: Default,Arial,${style.fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,${style.outline},${style.shadow},2,${style.marginLR},${style.marginLR},${style.marginV},1`,
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ].join("\n");
+}
 
 export interface AssBuildResult {
     content: string;
@@ -266,8 +323,14 @@ export interface AssBuildResult {
 
 // Build an ASS subtitle file covering the clip window [clipStart, clipEnd].
 // Cues that overlap the window are clipped to it and rebased so the clip starts
-// at t=0; cues entirely outside are dropped.
-export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number): AssBuildResult {
+// at t=0; cues entirely outside are dropped. style defaults to the original
+// shorts look so existing callers (and captions.test.ts) are unaffected.
+export function buildAssFromVtt(
+    vtt: string,
+    clipStart: number,
+    clipEnd: number,
+    style: AssStyleOptions = SHORT_CAPTION_STYLE,
+): AssBuildResult {
     const cues = parseVttCues(vtt);
     const events: string[] = [];
 
@@ -284,7 +347,10 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
 
         // Split a long cue into a sequence of 2–3 line captions (never a lone
         // trailing line) and spread the cue's on-screen time evenly across them.
-        const chunks = chunkCaptions(normalizeCaptionText(cue.text));
+        const chunks = chunkCaptions(
+            normalizeCaptionText(cue.text, style.uppercase),
+            style.maxCharsPerLine,
+        );
         if (chunks.length === 0) {
             continue;
         }
@@ -297,9 +363,10 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
         });
     }
 
+    const header = buildAssHeader(style);
     const content = events.length > 0
-        ? `${ASS_HEADER}\n${events.join("\n")}\n`
-        : `${ASS_HEADER}\n`;
+        ? `${header}\n${events.join("\n")}\n`
+        : `${header}\n`;
 
     return { content, cueCount: events.length };
 }

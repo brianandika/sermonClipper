@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Asset, Job, Result, ShortSuggestion } from '../types';
+import { formatMinSec, parseMinSec } from '../timeFormat';
 import {
   createShortJob,
   createTranscribeJob,
@@ -353,7 +354,7 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
           <div className="shorts-range">
             <label>
               Start
-              <input type="text" value={moment.start.toFixed(3)} onChange={(event) => onChange({ start: Number.parseFloat(event.target.value) })} />
+              <input type="text" value={formatMinSec(moment.start)} placeholder="m:ss.mmm" onChange={(event) => onChange({ start: parseMinSec(event.target.value) ?? 0 })} />
             </label>
             <button type="button" className="btn set-start-time" onClick={() => setBoundToCurrent('start')}>Set</button>
             <button type="button" className="btn" onClick={() => jumpTo(moment.start)}>Jump</button>
@@ -362,7 +363,7 @@ function ShortEditor({ index, source, cues, moment, fallbackDuration, onChange, 
           <div className="shorts-range">
             <label>
               End
-              <input type="text" value={moment.end.toFixed(3)} onChange={(event) => onChange({ end: Number.parseFloat(event.target.value) })} />
+              <input type="text" value={formatMinSec(moment.end)} placeholder="m:ss.mmm" onChange={(event) => onChange({ end: parseMinSec(event.target.value) ?? 0 })} />
             </label>
             <button type="button" className="btn set-end-time" onClick={() => setBoundToCurrent('end')}>Set</button>
             <button type="button" className="btn" onClick={() => jumpTo(moment.end)}>Jump</button>

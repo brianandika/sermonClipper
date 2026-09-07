@@ -698,6 +698,11 @@ video, audio {
 
 .shorts-video {
   width: 100%;
+  /* Override the global `video, audio { max-width: 800px }` rule below — in a
+     wide container (e.g. ClipFlow's full-width single-player layout) that cap
+     left the video pinned to the left with the dark .shorts-preview background
+     exposed on the right. */
+  max-width: none;
   height: auto;
   display: block;
 }
@@ -1155,6 +1160,7 @@ video, audio {
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   padding: 1rem;
+  margin-top: 1.25rem;
   margin-bottom: 1.25rem;
   background: #f8fafc;
 }

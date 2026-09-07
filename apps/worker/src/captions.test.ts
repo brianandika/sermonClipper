@@ -12,6 +12,7 @@ import {
     escapeAssText,
     evenFloor,
     formatAssTime,
+    landscapeCaptionStyle,
     normalizeCaptionText,
     parseVttCues,
     parseVttTimestamp,
@@ -155,6 +156,40 @@ test("buildAssFromVtt with no cues in range still yields a valid header", () => 
     assert.equal(cueCount, 0);
     assert.match(content, /\[Events\]/);
     assert.doesNotMatch(content, /Dialogue:/);
+});
+
+// --- AssStyleOptions (landscape clip support) -------------------------------
+test("buildAssFromVtt default style still emits the original shorts header, thick outline included", () => {
+    const { content } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
+    assert.match(content, /PlayResX: 1080/);
+    assert.match(content, /PlayResY: 1920/);
+    // ...Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,...
+    assert.match(content, /Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,/);
+});
+
+test("landscapeCaptionStyle uses a much thinner outline than shorts, scaled to its own font size", () => {
+    const hd = landscapeCaptionStyle(1920, 1080);
+    // Shorts' outline/fontSize ratio is 5/64 ≈ 7.8% — deliberately thick/punchy.
+    // Landscape must be noticeably thinner, or it reads as "bubbly" at any size.
+    assert.ok(hd.outline / hd.fontSize < 0.05, `outline ratio ${hd.outline / hd.fontSize} should be < 5%`);
+    assert.ok(hd.outline >= 1, "outline never rounds down to invisible");
+
+    // Scales with resolution rather than staying fixed (a 4K frame needs a
+    // thicker stroke than 720p to read the same way).
+    const sd = landscapeCaptionStyle(1280, 720);
+    assert.ok(hd.outline >= sd.outline, "outline grows (or holds) with frame size");
+    assert.ok(hd.fontSize > sd.fontSize, "font size grows with frame size");
+});
+
+test("buildAssFromVtt with landscapeCaptionStyle emits that style's header and stays natural case", () => {
+    const style = landscapeCaptionStyle(1920, 1080);
+    const { content } = buildAssFromVtt(SAMPLE_VTT, 2, 4, style);
+    assert.match(content, /PlayResX: 1920/);
+    assert.match(content, /PlayResY: 1080/);
+    assert.match(content, new RegExp(`Style: Default,Arial,${style.fontSize},`));
+    // Natural case, not uppercased like the shorts style.
+    assert.match(content, /Hello world/);
+    assert.doesNotMatch(content, /HELLO WORLD/);
 });
 
 // --- caption chunking (never exceed 2 lines) --------------------------------
