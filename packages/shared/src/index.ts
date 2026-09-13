@@ -1,3 +1,5 @@
+export * from "./vtt";
+
 export const SESSION_COOKIE_NAME = "sermon_clipper_session";
 
 // YouTube Shorts (and IG Reels) cap a clip at 3 minutes, so a short's
@@ -112,6 +114,11 @@ export interface SuggestShortsResponse {
 // landscape trim/cut flow), preserving backward compatibility with existing jobs.
 export type JobKind = "sermon" | "transcribeSource" | "short" | "burnSubtitles";
 
+// "burnSubtitles" only: whether to hard-burn the reviewed transcript into a
+// new derived video (the original behavior) or export it as a plain .srt
+// file instead — no video re-render at all. Default "burned".
+export type CaptionFormat = "burned" | "srt";
+
 // Default and max for "sermon"'s configurable fade-in/out length
 // (CreateJobRequest.fadeSeconds).
 export const DEFAULT_FADE_SECONDS = 1;
@@ -172,6 +179,10 @@ export interface CreateJobRequest {
     // transcribing that exact video — see processTranscribeSourceJob's retry
     // mode). The API rejects the job if this is missing/empty.
     captionsVtt?: string;
+    // "burnSubtitles" only: "burned" (default) hard-burns captionsVtt into a
+    // new derived video; "srt" instead exports it as a plain .srt file (no
+    // video re-render).
+    captionFormat?: CaptionFormat;
 }
 
 export interface JobResponse {
@@ -211,6 +222,7 @@ export interface ResultResponse {
     videoPath: string | null;
     audioPath: string | null;
     transcriptPath: string | null;
+    srtPath: string | null;
     manifestPath: string | null;
     sizeBytes: string | null;
     duration: number | null;

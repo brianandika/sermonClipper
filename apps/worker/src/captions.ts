@@ -371,6 +371,67 @@ export function buildAssFromVtt(
     return { content, cueCount: events.length };
 }
 
+// SRT timestamp: "HH:MM:SS,mmm" (comma decimal, unlike ASS's centisecond dot).
+export function formatSrtTime(totalSeconds: number): string {
+    const clamped = Math.max(0, totalSeconds);
+    let hours = Math.floor(clamped / 3600);
+    let minutes = Math.floor((clamped % 3600) / 60);
+    let seconds = Math.floor(clamped % 60);
+    let millis = Math.round((clamped - Math.floor(clamped)) * 1000);
+
+    if (millis === 1000) {
+        millis = 0;
+        seconds += 1;
+        if (seconds === 60) {
+            seconds = 0;
+            minutes += 1;
+            if (minutes === 60) {
+                minutes = 0;
+                hours += 1;
+            }
+        }
+    }
+
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(millis).padStart(3, "0")}`;
+}
+
+export interface SrtBuildResult {
+    content: string;
+    cueCount: number;
+}
+
+// Build a plain .srt document covering [clipStart, clipEnd], clipping/rebasing
+// cues the same way buildAssFromVtt does. Unlike the burn-in path, text keeps
+// its natural case and is never re-wrapped into 2-3 line on-screen chunks —
+// each cue becomes one flat SRT block — since this is a portable file the
+// user may re-edit in other software.
+export function buildSrtFromVtt(vtt: string, clipStart: number, clipEnd: number): SrtBuildResult {
+    const cues = parseVttCues(vtt);
+    const blocks: string[] = [];
+
+    for (const cue of cues) {
+        if (cue.end <= clipStart || cue.start >= clipEnd) {
+            continue;
+        }
+
+        const start = Math.max(0, cue.start - clipStart);
+        const end = Math.min(clipEnd, cue.end) - clipStart;
+        if (end <= start) {
+            continue;
+        }
+
+        const text = normalizeCaptionText(cue.text, false);
+        if (!text) {
+            continue;
+        }
+
+        blocks.push(`${blocks.length + 1}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${text}`);
+    }
+
+    const content = blocks.length > 0 ? `${blocks.join("\n\n")}\n` : "";
+    return { content, cueCount: blocks.length };
+}
+
 // Escape a file path for use inside an ffmpeg "-vf" filtergraph value (the
 // ass=<path> option). Backslashes, colons and single quotes are special to the
 // filtergraph parser; commas would split the filter chain.

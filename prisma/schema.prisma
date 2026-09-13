@@ -107,6 +107,7 @@ model Result {
   videoPath    String?
   audioPath    String?
   transcriptPath String?
+  srtPath      String?
   manifestPath String?
   sizeBytes    BigInt?
   duration     Float?

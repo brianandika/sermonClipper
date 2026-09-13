@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { EditableTranscriptCue, Job, SubtitlesDraft } from '../types';
+import { CaptionFormat, EditableTranscriptCue, Job, SubtitlesDraft } from '../types';
 import {
   createBurnSubtitlesJob,
   createRetryTranscriptJob,
@@ -182,6 +182,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
 
   const handleBurn = async () => {
     if (draft.cues.length === 0) return;
+    const isSrt = draft.captionFormat === 'srt';
     setBurning(true);
     setBurnError(null);
     setBurnedJob(null);
@@ -192,6 +193,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
         assetId: sourceJob.assetId,
         sourceJobId: sourceJob.jobId,
         captionsVtt: buildVttText(draft.cues),
+        captionFormat: draft.captionFormat,
       });
 
       let finished: Job | null = null;
@@ -207,7 +209,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
       }
 
       if (!finished || finished.status !== 'completed') {
-        throw new Error(finished?.failureReason || 'Burning in subtitles did not complete');
+        throw new Error(finished?.failureReason || (isSrt ? 'Exporting the .srt did not complete' : 'Burning in subtitles did not complete'));
       }
       setBurnedJob(finished);
     } catch (err) {
@@ -218,7 +220,8 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
   };
 
   const sourceVideoUrl = sourceJob.result ? getResultArtifact(sourceJob.result.resultId, 'video') : null;
-  const burnedVideoUrl = burnedJob?.result ? getResultArtifact(burnedJob.result.resultId, 'video') : null;
+  const burnedVideoUrl = burnedJob?.result?.videoPath ? getResultArtifact(burnedJob.result.resultId, 'video') : null;
+  const burnedSrtUrl = burnedJob?.result?.srtPath ? getResultArtifact(burnedJob.result.resultId, 'srt') : null;
 
   if (!draft.cuesLoaded) {
     return (
@@ -264,7 +267,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     <div className="container shorts-page">
       <header className="shorts-header">
         <p className="shorts-eyebrow">Subtitles</p>
-        <h1 className="shorts-title">Review transcript & burn in subtitles</h1>
+        <h1 className="shorts-title">Review transcript & export subtitles</h1>
         <p className="shorts-subtitle">Source job: {sourceJob.jobId.slice(0, 8)}</p>
       </header>
 
@@ -278,7 +281,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
         <div className="shorts-transcript-editor-head">
           <h2 className="shorts-section-title">Transcript</h2>
         </div>
-        <p className="shorts-hint">Fix typos, delete lines you don't want captioned, then burn in subtitles below.</p>
+        <p className="shorts-hint">Fix typos, delete lines you don't want captioned, then choose an output below.</p>
         {draft.cues.length === 0 ? (
           <p className="shorts-hint">No transcript cues were found for this video.</p>
         ) : (
@@ -302,11 +305,42 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
         )}
       </section>
 
+      <section className="shorts-transcript-editor" style={{ marginTop: '1.25rem' }}>
+        <h2 className="shorts-section-title">Output</h2>
+        <div className="shorts-caption-format-choice" role="radiogroup" aria-label="Subtitle output format">
+          <label className="shorts-toggle">
+            <input
+              type="radio"
+              name="captionFormat"
+              checked={draft.captionFormat === 'burned'}
+              onChange={() => onDraftChange({ captionFormat: 'burned' as CaptionFormat })}
+            />
+            Burn into video
+          </label>
+          <label className="shorts-toggle">
+            <input
+              type="radio"
+              name="captionFormat"
+              checked={draft.captionFormat === 'srt'}
+              onChange={() => onDraftChange({ captionFormat: 'srt' as CaptionFormat })}
+            />
+            Export as .srt file
+          </label>
+        </div>
+        <p className="shorts-hint">
+          {draft.captionFormat === 'srt'
+            ? "Downloads a .srt subtitle file — the video itself isn't touched."
+            : 'Burns the captions permanently into a new copy of the video.'}
+        </p>
+      </section>
+
       {burnError && <p className="shorts-error">{burnError}</p>}
 
       <div className="shorts-prep-actions" style={{ marginTop: '1.25rem' }}>
         <button type="button" className="btn" disabled={burning || draft.cues.length === 0} onClick={handleBurn}>
-          {burning ? 'Burning in subtitles…' : 'Burn in Subtitles'}
+          {burning
+            ? (draft.captionFormat === 'srt' ? 'Exporting SRT…' : 'Burning in subtitles…')
+            : (draft.captionFormat === 'srt' ? 'Export SRT' : 'Burn in Subtitles')}
         </button>
       </div>
 
@@ -327,6 +361,16 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
           </video>
           <a href={burnedVideoUrl} download className="btn results-download-btn" style={{ marginTop: '0.75rem', display: 'inline-block' }}>
             Download Captioned Video
+          </a>
+        </section>
+      )}
+
+      {burnedJob && burnedSrtUrl && (
+        <section className="shorts-transcript-editor" style={{ marginTop: '1.25rem' }}>
+          <h2 className="shorts-section-title">Subtitles ready</h2>
+          <p className="shorts-hint">The video itself wasn't changed — here's your .srt file.</p>
+          <a href={burnedSrtUrl} download="subtitles.srt" className="btn results-download-btn" style={{ marginTop: '0.75rem', display: 'inline-block' }}>
+            Download .srt
           </a>
         </section>
       )}

@@ -13,9 +13,10 @@ import {
     Min,
     ValidateIf,
 } from "class-validator";
-import { HardwareOption, MAX_FADE_SECONDS, type JobKind } from "@sermon-clipper/shared";
+import { HardwareOption, MAX_FADE_SECONDS, type CaptionFormat, type JobKind } from "@sermon-clipper/shared";
 
 const JOB_KINDS: JobKind[] = ["sermon", "transcribeSource", "short", "burnSubtitles"];
+const CAPTION_FORMATS: CaptionFormat[] = ["burned", "srt"];
 
 export class CreateJobDto {
     @IsString()
@@ -161,4 +162,10 @@ export class CreateJobDto {
     @IsOptional()
     @IsString()
     captionsVtt?: string;
+
+    // "burnSubtitles" only: "burned" (default) hard-burns captionsVtt into a
+    // new derived video; "srt" exports it as a plain .srt file instead.
+    @IsOptional()
+    @IsIn(CAPTION_FORMATS)
+    captionFormat?: CaptionFormat;
 }

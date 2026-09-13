@@ -228,16 +228,20 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                 && jobKind(job) === 'sermon'
                 && job.status === 'completed'
                 && Boolean(job.result?.videoPath);
-              // burnSubtitles jobs have no Result-page flow, just a direct download.
+              // burnSubtitles jobs have no Result-page flow, just a direct download —
+              // either the captioned video (default) or, when captionFormat was
+              // 'srt', the exported subtitle file with no derived video at all.
               const isBurnSubtitles = jobKind(job) === 'burnSubtitles';
               const canDownloadSubtitledVideo = isOwnedByCurrentSession && isBurnSubtitles
                 && job.status === 'completed' && Boolean(job.result?.videoPath);
+              const canDownloadSrt = isOwnedByCurrentSession && isBurnSubtitles
+                && job.status === 'completed' && Boolean(job.result?.srtPath);
               const audioProgress = Math.max(0, Math.min(100, job.progress?.audioProgress ?? 0));
               const videoProgress = Math.max(0, Math.min(100, job.progress?.videoProgress ?? 0));
               const transcriptProgress = Math.max(0, Math.min(100, job.progress?.transcriptProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
               const requestedOutputName = getRequestedOutputName(job);
-              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts && !canAddSubtitles && !canDownloadSubtitledVideo;
+              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts && !canAddSubtitles && !canDownloadSubtitledVideo && !canDownloadSrt;
 
               const childShorts = childrenByParent.get(job.jobId) ?? [];
               const shortsDone = childShorts.filter((c) => c.status === 'completed' && Boolean(c.result?.videoPath)).length;
@@ -310,6 +314,16 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                           style={{ minWidth: '88px', background: '#7c3aed', textAlign: 'center' }}
                         >
                           Download
+                        </a>
+                      ) : null}
+                      {canDownloadSrt && job.result ? (
+                        <a
+                          className="btn"
+                          href={getResultArtifact(job.result.resultId, 'srt')}
+                          download="subtitles.srt"
+                          style={{ minWidth: '88px', background: '#7c3aed', textAlign: 'center' }}
+                        >
+                          Download .srt
                         </a>
                       ) : null}
                       {noActions ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}

@@ -15,6 +15,7 @@ function createSubtitlesDraft(sourceJobId: string): SubtitlesDraft {
     cues: [],
     cuesLoaded: false,
     prepJobId: null,
+    captionFormat: 'burned',
   };
 }
 

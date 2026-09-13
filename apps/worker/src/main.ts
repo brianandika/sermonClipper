@@ -8,8 +8,8 @@ import { promisify } from "node:util";
 import { execFile, spawn } from "node:child_process";
 import IORedis from "ioredis";
 import { PrismaClient, JobStatus as PrismaJobStatus, HardwareOption } from "@prisma/client";
-import { JobStage, QUEUE_NAMES, type ClipProcessJobData, type CreateJobRequest, type JobKind, type QueueName } from "@sermon-clipper/shared";
-import { buildAssFromVtt, buildShortVideoFilter, clamp, escapeAssPathForFilter, landscapeCaptionStyle, MAX_ZOOM, MIN_ZOOM } from "./captions";
+import { JobStage, QUEUE_NAMES, type CaptionFormat, type ClipProcessJobData, type CreateJobRequest, type JobKind, type QueueName } from "@sermon-clipper/shared";
+import { buildAssFromVtt, buildShortVideoFilter, buildSrtFromVtt, clamp, escapeAssPathForFilter, landscapeCaptionStyle, MAX_ZOOM, MIN_ZOOM } from "./captions";
 
 const execFileAsync = promisify(execFile);
 const defaultCpuConcurrency = Math.max(1, Math.min(4, availableParallelism()));
@@ -561,7 +561,7 @@ function getSegmentVideoFilter(targetWidth: number, targetHeight: number, fps = 
     ].join(",");
 }
 
-function sanitizeOutputFilename(raw: string | undefined, extension: ".mp3" | ".mp4", fallbackBase: string) {
+function sanitizeOutputFilename(raw: string | undefined, extension: ".mp3" | ".mp4" | ".srt", fallbackBase: string) {
     const fallback = `${fallbackBase}${extension}`;
     const candidate = (raw ?? "").trim();
     if (!candidate) {
@@ -2253,9 +2253,7 @@ async function processBurnSubtitlesJob(payload: ClipProcessJobData) {
         const sourceVideoPath = sourceJob.result.videoPath;
         const effectiveHardware = job.effectiveHardware ?? (job.requestedHardware ?? HardwareOption.auto) as HardwareOption;
         const jobRoot = getJobRoot(job.sessionId, job.id);
-        const assFilePath = join(jobRoot, "captions.ass");
-        const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "captioned-video");
-        const outputVideoPath = join(jobRoot, outputVideoFilename);
+        const captionFormat: CaptionFormat = request.captionFormat === "srt" ? "srt" : "burned";
 
         await mkdir(jobRoot, { recursive: true });
         await enqueueProgressWrite(job.id, {
@@ -2265,15 +2263,84 @@ async function processBurnSubtitlesJob(payload: ClipProcessJobData) {
             stage: JobStage.extractClips,
             stageProgress: 0,
             overallProgress: 5,
-            message: "Preparing to burn in subtitles",
+            message: captionFormat === "srt" ? "Preparing subtitle file" : "Preparing to burn in subtitles",
         });
+
+        const sourceDuration = (await detectOutputDuration(job.id, sourceVideoPath)) ?? sourceJob.result.duration ?? 0;
+
+        // "srt": export the reviewed transcript as a plain .srt file. No libass
+        // check, no ffmpeg pass, no derived video at all — the source video is
+        // never touched, so this just writes a file and completes.
+        if (captionFormat === "srt") {
+            const srt = buildSrtFromVtt(request.captionsVtt, 0, sourceDuration);
+            if (srt.cueCount === 0) {
+                throw new Error("Cannot export subtitles: the transcript has no lines");
+            }
+
+            const outputSrtFilename = sanitizeOutputFilename(request.outputVideoFilename, ".srt", "captions");
+            const outputSrtPath = join(jobRoot, outputSrtFilename);
+            await writeFile(outputSrtPath, srt.content);
+
+            await assertJobNotCanceled(job.id);
+
+            const outputStats = await stat(outputSrtPath);
+            const expiresAt = new Date();
+            expiresAt.setUTCDate(expiresAt.getUTCDate() + runtimeEnv.resultTtlDays);
+
+            // Write the Result once, at completion, with a real srtPath — srt-only
+            // (videoPath/audioPath/manifestPath stay null; the API 404s those).
+            await prisma.$transaction([
+                prisma.result.upsert({
+                    where: { jobId: job.id },
+                    update: {
+                        sessionId: job.sessionId,
+                        srtPath: outputSrtPath,
+                        sizeBytes: BigInt(outputStats.size),
+                        duration: sourceDuration,
+                        expiresAt,
+                    },
+                    create: {
+                        jobId: job.id,
+                        sessionId: job.sessionId,
+                        srtPath: outputSrtPath,
+                        sizeBytes: BigInt(outputStats.size),
+                        duration: sourceDuration,
+                        expiresAt,
+                    },
+                }),
+                prisma.processingArtifact.create({
+                    data: {
+                        jobId: job.id,
+                        type: "srt",
+                        filename: basename(outputSrtPath),
+                        storagePath: outputSrtPath,
+                        sizeBytes: BigInt(outputStats.size),
+                    },
+                }),
+            ]);
+
+            await enqueueProgressWrite(job.id, {
+                status: PrismaJobStatus.completed,
+                finishedAt: new Date(),
+                failureReason: null,
+                stage: JobStage.complete,
+                stageProgress: 100,
+                overallProgress: 100,
+                videoProgress: 100,
+                message: "Subtitles ready",
+            });
+            return;
+        }
+
+        const assFilePath = join(jobRoot, "captions.ass");
+        const outputVideoFilename = sanitizeOutputFilename(request.outputVideoFilename, ".mp4", "captioned-video");
+        const outputVideoPath = join(jobRoot, outputVideoFilename);
 
         if (!(await canBurnCaptions())) {
             throw new Error("Cannot burn in subtitles: this worker's FFmpeg has no libass support");
         }
 
         const media = await detectMediaProperties(job.id, sourceVideoPath);
-        const sourceDuration = (await detectOutputDuration(job.id, sourceVideoPath)) ?? sourceJob.result.duration ?? 0;
 
         const ass = buildAssFromVtt(request.captionsVtt, 0, sourceDuration, landscapeCaptionStyle(media.width, media.height));
         if (ass.cueCount === 0) {

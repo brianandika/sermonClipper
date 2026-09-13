@@ -9,6 +9,7 @@ import {
   HardwareCapabilitiesResponse,
   HardwareOption,
   ShortSuggestion,
+  CaptionFormat,
 } from './types';
 
 const API_BASE = '/api';
@@ -181,6 +182,9 @@ export const createBurnSubtitlesJob = async (params: {
   captionsVtt: string;
   title?: string;
   outputVideoFilename?: string;
+  // 'burned' (default) hard-burns into a new derived video; 'srt' exports a
+  // plain .srt file instead, with no video re-render.
+  captionFormat?: CaptionFormat;
 }): Promise<Job> => {
   const { data } = await api.post('/jobs', { kind: 'burnSubtitles', ...params });
   return data;
@@ -229,7 +233,7 @@ export const getResult = async (jobId: string): Promise<Result> => {
   return data;
 };
 
-export const getResultArtifact = (resultId: string, type: 'audio' | 'video' | 'transcript') => {
+export const getResultArtifact = (resultId: string, type: 'audio' | 'video' | 'transcript' | 'srt') => {
   return `${API_BASE}/results/${resultId}/${type}`;
 };
 

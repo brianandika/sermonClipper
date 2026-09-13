@@ -92,12 +92,16 @@ export default function ResultsFlow({ job, result, onCreateShorts, onAddSubtitle
   const audioUrl = getResultArtifact(currentResult.resultId, 'audio');
   const videoUrl = getResultArtifact(currentResult.resultId, 'video');
   const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
+  // Same transcript, converted to .srt on the fly by the API (no separate job
+  // or storage — see ResultsController.getSrtArtifact).
+  const srtUrl = getResultArtifact(currentResult.resultId, 'srt');
   // Prefer the worker's actual measured output duration (accounts for removed
   // middle clips and crossfades); fall back to the kept-span estimate.
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
   const transcriptDownloadName = `${requestedBaseName?.trim() || 'transcript'}.vtt`;
+  const srtDownloadName = `${requestedBaseName?.trim() || 'transcript'}.srt`;
   const isVideoReady = Boolean(currentResult.videoPath);
   const isAudioReady = Boolean(currentResult.audioPath);
   const isTranscriptReady = Boolean(currentResult.transcriptPath);
@@ -209,9 +213,14 @@ export default function ResultsFlow({ job, result, onCreateShorts, onAddSubtitle
                     background: '#fff',
                   }}
                 />
-                <a href={transcriptUrl} download={transcriptDownloadName} className="btn results-download-btn">
-                  Download Captions (VTT)
-                </a>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <a href={transcriptUrl} download={transcriptDownloadName} className="btn results-download-btn">
+                    Download Captions (VTT)
+                  </a>
+                  <a href={srtUrl} download={srtDownloadName} className="btn results-download-btn">
+                    Download Captions (SRT)
+                  </a>
+                </div>
               </>
             ) : (
               <p className="results-pending-copy">Transcript is generated after the video finishes encoding.</p>

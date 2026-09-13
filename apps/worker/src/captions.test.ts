@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
     buildAssFromVtt,
     buildShortVideoFilter,
+    buildSrtFromVtt,
     CAPTION_MAX_CHARS_PER_LINE,
     chunkCaptions,
     computeShortCrop,
@@ -12,6 +13,7 @@ import {
     escapeAssText,
     evenFloor,
     formatAssTime,
+    formatSrtTime,
     landscapeCaptionStyle,
     normalizeCaptionText,
     parseVttCues,
@@ -156,6 +158,37 @@ test("buildAssFromVtt with no cues in range still yields a valid header", () => 
     assert.equal(cueCount, 0);
     assert.match(content, /\[Events\]/);
     assert.doesNotMatch(content, /Dialogue:/);
+});
+
+// --- formatSrtTime / buildSrtFromVtt (SRT export) --------------------------
+test("formatSrtTime uses comma decimal and rounds milliseconds with carry", () => {
+    assert.equal(formatSrtTime(0), "00:00:00,000");
+    assert.equal(formatSrtTime(3661.25), "01:01:01,250");
+    assert.equal(formatSrtTime(1.9999), "00:00:02,000"); // rounds up, carries
+});
+
+test("buildSrtFromVtt slices to window, rebases to zero, and numbers sequentially", () => {
+    const { content, cueCount } = buildSrtFromVtt(SAMPLE_VTT, 2, 4);
+    assert.equal(cueCount, 2);
+    assert.match(content, /^1\n00:00:00,000 --> 00:00:01,000\nHello world/);
+    assert.match(content, /2\n00:00:01,000 --> 00:00:02,000\nSecond cue spans two lines/);
+    assert.doesNotMatch(content, /Way outside/i);
+});
+
+test("buildSrtFromVtt keeps natural case and does not re-wrap into 2-3 line chunks like the burn-in path does", () => {
+    const { content } = buildSrtFromVtt(SAMPLE_VTT, 0, 20);
+    assert.match(content, /Hello world/);
+    assert.doesNotMatch(content, /HELLO WORLD/);
+    // A multi-line VTT cue collapses to one flat line per SRT cue (same
+    // whitespace normalization as the burn-in path), not chunkCaptions' 2-3
+    // line on-screen wrapping.
+    assert.match(content, /Second cue spans two lines/);
+});
+
+test("buildSrtFromVtt with no cues in range yields empty content", () => {
+    const { content, cueCount } = buildSrtFromVtt(SAMPLE_VTT, 100, 200);
+    assert.equal(cueCount, 0);
+    assert.equal(content, "");
 });
 
 // --- AssStyleOptions (landscape clip support) -------------------------------

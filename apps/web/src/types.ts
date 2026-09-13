@@ -21,6 +21,10 @@ export interface Asset {
 
 export type JobKind = 'sermon' | 'transcribeSource' | 'short' | 'burnSubtitles';
 
+// "burnSubtitles" only: hard-burn the transcript into a new derived video, or
+// export it as a plain .srt file instead (no video re-render). Default 'burned'.
+export type CaptionFormat = 'burned' | 'srt';
+
 export type HardwareOption = 'auto' | 'cpu' | 'intel' | 'cuda' | 'apple' | 'vaapi';
 
 export interface PeaksResponse {
@@ -72,6 +76,7 @@ export interface Job {
     preserveAspectRatio?: boolean;
     sourceJobId?: string;
     captionsVtt?: string;
+    captionFormat?: CaptionFormat;
   };
   failureReason: string | null;
   createdAt: string;
@@ -97,6 +102,7 @@ export interface Result {
   audioPath: string | null;
   videoPath: string | null;
   transcriptPath?: string | null;
+  srtPath?: string | null;
   manifestPath?: string | null;
   sizeBytes?: string | null;
   duration?: number | null;
@@ -125,6 +131,9 @@ export interface SubtitlesDraft {
   // `cues.length === 0`, which could also just mean an empty transcript).
   cuesLoaded: boolean;
   prepJobId: string | null;
+  // User's choice for the export action below, defaulting to 'burned' (the
+  // original always-burn behavior).
+  captionFormat: CaptionFormat;
 }
 
 // One AI-suggested shorts moment from the sermon transcript (heading +

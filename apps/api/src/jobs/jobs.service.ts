@@ -393,6 +393,7 @@ export class JobsService {
                     videoPath: normalizeResultPath(job.result.videoPath),
                     audioPath: normalizeResultPath(job.result.audioPath),
                     transcriptPath: normalizeResultPath(job.result.transcriptPath),
+                    srtPath: normalizeResultPath(job.result.srtPath),
                     manifestPath: normalizeResultPath(job.result.manifestPath),
                     sizeBytes: job.result.sizeBytes?.toString() ?? null,
                     duration: job.result.duration,
