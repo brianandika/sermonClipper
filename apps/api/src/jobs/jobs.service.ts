@@ -7,6 +7,7 @@ import {
     MAX_SHORT_DURATION_SEC,
     QUEUE_NAMES,
     type CreateJobRequest,
+    type JobKind,
     type QueueName,
 } from "@sermon-clipper/shared";
 import { type Prisma } from "@prisma/client";
@@ -25,11 +26,11 @@ function normalizeResultPath(path: string | null) {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-function validateClipRanges(payload: CreateJobDto) {
-    if (payload.startTime >= payload.endTime) {
-        throw new BadRequestException("startTime must be less than endTime");
-    }
-
+// "sermon"'s clipStarts/clipEnds describe GAPS to cut out of
+// [startTime, endTime] — the kept output is everything between them,
+// concatenated (see the worker's getSegments). Both arrays must be provided
+// together, equal length, ordered, non-overlapping, and inside the range.
+function validateClipGaps(payload: Pick<CreateJobDto, "startTime" | "endTime" | "clipStarts" | "clipEnds">) {
     const hasClipStarts = Boolean(payload.clipStarts?.length);
     const hasClipEnds = Boolean(payload.clipEnds?.length);
 
@@ -64,6 +65,14 @@ function validateClipRanges(payload: CreateJobDto) {
 
         previousClipEnd = clipEnd;
     }
+}
+
+function validateClipRanges(payload: CreateJobDto) {
+    if (payload.startTime >= payload.endTime) {
+        throw new BadRequestException("startTime must be less than endTime");
+    }
+
+    validateClipGaps(payload);
 
     if (payload.introDuration !== undefined && payload.introDuration <= 0) {
         throw new BadRequestException("introDuration must be greater than 0 when provided");
@@ -90,6 +99,18 @@ function validateShortRange(payload: CreateJobDto) {
     }
 }
 
+// "burnSubtitles" always needs both — no meaningful default for either.
+function validateBurnSubtitlesRequest(payload: CreateJobDto) {
+    if (!payload.sourceJobId?.trim()) {
+        throw new BadRequestException("Burning in subtitles requires sourceJobId");
+    }
+    if (!payload.captionsVtt?.trim()) {
+        throw new BadRequestException(
+            "Burning in subtitles requires a reviewed transcript. Prepare and review the transcript first.",
+        );
+    }
+}
+
 @Injectable()
 export class JobsService {
     constructor(
@@ -98,14 +119,36 @@ export class JobsService {
         private readonly jobHardwareService: JobHardwareService,
     ) { }
 
+    // Verifies sourceJobId belongs to this session and already has a finished
+    // video — shared by transcribeSource's retry mode and burnSubtitles, both
+    // of which operate on another job's Result.videoPath rather than a fresh
+    // upload. Throws a clear 400/404 here instead of letting the worker fail
+    // on it later.
+    private async requireOwnedVideoJob(sessionId: string, sourceJobId: string) {
+        const sourceJob = await this.prisma.job.findFirst({
+            where: { id: sourceJobId, sessionId },
+            include: { result: true },
+        });
+        if (!sourceJob) {
+            throw new NotFoundException("Source job not found");
+        }
+        if (!sourceJob.result?.videoPath) {
+            throw new BadRequestException("Source job has no finished video yet");
+        }
+        return sourceJob;
+    }
+
     async create(sessionId: string, assetId: string, payload: CreateJobDto) {
         const kind = payload.kind ?? "sermon";
 
-        // Idempotency: never queue a second transcription for a source that is
+        // Idempotency: never queue a second transcription for a video that is
         // already being transcribed. Re-mounting the Shorts tab or double-clicks
-        // return the in-flight job instead of piling up duplicates.
+        // return the in-flight job instead of piling up duplicates. Keyed by
+        // sourceJobId too, so the default (whole-asset) mode and a "retry
+        // transcript for job X" request never dedupe against each other, and
+        // retries for two different jobs don't collide either.
         if (kind === "transcribeSource") {
-            const activeTranscription = await this.prisma.job.findFirst({
+            const activeTranscriptions = await this.prisma.job.findMany({
                 where: {
                     sessionId,
                     assetId,
@@ -123,8 +166,13 @@ export class JobsService {
                 orderBy: { createdAt: "desc" },
             });
 
-            if (activeTranscription) {
-                return activeTranscription;
+            const match = activeTranscriptions.find((candidate) => {
+                const candidatePayload = candidate.payloadJson as { sourceJobId?: string } | null;
+                return (candidatePayload?.sourceJobId ?? null) === (payload.sourceJobId ?? null);
+            });
+
+            if (match) {
+                return match;
             }
         }
 
@@ -134,7 +182,13 @@ export class JobsService {
         else if (kind === "short") {
             validateShortRange(payload);
         }
-        // transcribeSource has no clip range to validate.
+        else if (kind === "burnSubtitles") {
+            validateBurnSubtitlesRequest(payload);
+            await this.requireOwnedVideoJob(sessionId, payload.sourceJobId!);
+        }
+        else if (kind === "transcribeSource" && payload.sourceJobId) {
+            await this.requireOwnedVideoJob(sessionId, payload.sourceJobId);
+        }
 
         const requestedHardware = (payload.hardware ?? HardwareOption.auto) as HardwareOption;
         const resolution = await this.jobHardwareService.resolve(requestedHardware);
@@ -247,14 +301,14 @@ export class JobsService {
         });
     }
 
-    // All "short" jobs for a given source asset (session-scoped), newest first —
-    // the persisted "saved shorts" for that source.
-    async listShortsForAsset(sessionId: string, assetId: string) {
+    // All jobs of a given kind for a source asset (session-scoped), newest
+    // first — the persisted "saved shorts"/"saved clips" for that source.
+    async listJobsForAssetByKind(sessionId: string, assetId: string, kind: JobKind) {
         return this.prisma.job.findMany({
             where: {
                 sessionId,
                 assetId,
-                payloadJson: { path: ["kind"], equals: "short" },
+                payloadJson: { path: ["kind"], equals: kind },
             },
             include: {
                 progress: true,
@@ -264,6 +318,10 @@ export class JobsService {
                 createdAt: "desc",
             },
         });
+    }
+
+    async listShortsForAsset(sessionId: string, assetId: string) {
+        return this.listJobsForAssetByKind(sessionId, assetId, "short");
     }
 
     async cancelOwnedJob(sessionId: string, jobId: string) {

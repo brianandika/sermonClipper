@@ -115,6 +115,12 @@ export const createJob = async (jobData: {
   fps?: number;
   hardware?: HardwareOption;
   deliverTranscript?: boolean;
+  // Fade the composed output in/out this many seconds at each end (0 = no
+  // fade). Omitted ⇒ worker default (1s, the original always-on behavior).
+  fadeSeconds?: number;
+  // Skip the standard 1920x1080 canvas and keep the source's own
+  // resolution/aspect ratio instead. Default false.
+  preserveAspectRatio?: boolean;
 }) => {
   const { data } = await api.post('/jobs', jobData);
   return data;
@@ -124,6 +130,20 @@ export const createJob = async (jobData: {
 // for building shorts / picking moments from the transcript.
 export const createTranscribeJob = async (assetId: string): Promise<Job> => {
   const { data } = await api.post('/jobs', { assetId, kind: 'transcribeSource' });
+  return data;
+};
+
+// Retry transcription for a completed job that has no transcript yet
+// (transcription was disabled, or failed the first time) — transcribes THAT
+// job's own finished video and writes back to its own Result.transcriptPath.
+// Used by the Subtitles flow before a transcript can be reviewed. Fresh every
+// call is fine — the API dedupes an already-in-flight retry for the same
+// sourceJobId.
+export const createRetryTranscriptJob = async (params: {
+  assetId: string;
+  sourceJobId: string;
+}): Promise<Job> => {
+  const { data } = await api.post('/jobs', { kind: 'transcribeSource', ...params });
   return data;
 };
 
@@ -149,6 +169,20 @@ export const createShortJob = async (params: {
 // shown in the Shorts editor so they survive tab switches and reloads.
 export const getShortsForAsset = async (assetId: string): Promise<Job[]> => {
   const { data } = await api.get(`/jobs/shorts/${assetId}`);
+  return data;
+};
+
+// Burn a reviewed transcript into a completed job's finished video, producing
+// a new derived video (the original is untouched). assetId is the same asset
+// the source job used; sourceJobId identifies which job's video to caption.
+export const createBurnSubtitlesJob = async (params: {
+  assetId: string;
+  sourceJobId: string;
+  captionsVtt: string;
+  title?: string;
+  outputVideoFilename?: string;
+}): Promise<Job> => {
+  const { data } = await api.post('/jobs', { kind: 'burnSubtitles', ...params });
   return data;
 };
 
@@ -197,4 +231,11 @@ export const getResult = async (jobId: string): Promise<Result> => {
 
 export const getResultArtifact = (resultId: string, type: 'audio' | 'video' | 'transcript') => {
   return `${API_BASE}/results/${resultId}/${type}`;
+};
+
+// Fetch the raw WebVTT text of a Result's transcript artifact — used by the
+// Subtitles flow to load a completed job's own transcript for review.
+export const getResultTranscriptText = async (resultId: string): Promise<string> => {
+  const { data } = await api.get(`/results/${resultId}/transcript`, { responseType: 'text' });
+  return data as string;
 };

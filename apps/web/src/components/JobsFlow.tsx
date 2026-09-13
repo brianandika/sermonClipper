@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { cancelJob, getJobs, getResult } from '../api';
+import { cancelJob, getJobs, getResult, getResultArtifact } from '../api';
 import { Job, Result } from '../types';
 
 interface JobsFlowProps {
@@ -8,6 +8,7 @@ interface JobsFlowProps {
   onOpenResult: (job: Job, result: Result) => void;
   onOpenShorts: (job: Job) => void;
   onViewTranscribeResult: (job: Job) => void | Promise<void>;
+  onAddSubtitles: (job: Job) => void;
   shortsBusy: boolean;
   onReset: () => void;
 }
@@ -58,7 +59,7 @@ function MiniBar({ label, value, color }: { label: string; value: number; color:
   );
 }
 
-export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onOpenShorts, onViewTranscribeResult, shortsBusy, onReset }: JobsFlowProps) {
+export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, onOpenShorts, onViewTranscribeResult, onAddSubtitles, shortsBusy, onReset }: JobsFlowProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -222,12 +223,21 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
               const canShorts = isOwnedByCurrentSession
                 && job.status === 'completed'
                 && ((jobKind(job) === 'sermon' && Boolean(job.result?.videoPath)) || isTranscribe);
+              // Sermon with a finished video can have subtitles burned in.
+              const canAddSubtitles = isOwnedByCurrentSession
+                && jobKind(job) === 'sermon'
+                && job.status === 'completed'
+                && Boolean(job.result?.videoPath);
+              // burnSubtitles jobs have no Result-page flow, just a direct download.
+              const isBurnSubtitles = jobKind(job) === 'burnSubtitles';
+              const canDownloadSubtitledVideo = isOwnedByCurrentSession && isBurnSubtitles
+                && job.status === 'completed' && Boolean(job.result?.videoPath);
               const audioProgress = Math.max(0, Math.min(100, job.progress?.audioProgress ?? 0));
               const videoProgress = Math.max(0, Math.min(100, job.progress?.videoProgress ?? 0));
               const transcriptProgress = Math.max(0, Math.min(100, job.progress?.transcriptProgress ?? 0));
               const rowBusy = actionJobId === job.jobId;
               const requestedOutputName = getRequestedOutputName(job);
-              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts;
+              const noActions = !canCancel && !canOpenResult && !canViewTranscribeResult && !canShorts && !canAddSubtitles && !canDownloadSubtitledVideo;
 
               const childShorts = childrenByParent.get(job.jobId) ?? [];
               const shortsDone = childShorts.filter((c) => c.status === 'completed' && Boolean(c.result?.videoPath)).length;
@@ -286,6 +296,21 @@ export default function JobsFlow({ currentSessionId, activeJobId, onOpenResult, 
                         <button type="button" className="btn" onClick={() => onOpenShorts(job)} disabled={shortsBusy} style={{ minWidth: '88px', background: '#0f766e' }}>
                           {shortsBusy ? 'Opening...' : 'Shorts'}
                         </button>
+                      ) : null}
+                      {canAddSubtitles ? (
+                        <button type="button" className="btn" onClick={() => onAddSubtitles(job)} disabled={rowBusy} style={{ minWidth: '88px', background: '#7c3aed' }}>
+                          Add Subtitles
+                        </button>
+                      ) : null}
+                      {canDownloadSubtitledVideo && job.result ? (
+                        <a
+                          className="btn"
+                          href={getResultArtifact(job.result.resultId, 'video')}
+                          download
+                          style={{ minWidth: '88px', background: '#7c3aed', textAlign: 'center' }}
+                        >
+                          Download
+                        </a>
                       ) : null}
                       {noActions ? <span style={{ color: '#64748b' }}>{isOwnedByCurrentSession ? 'No actions' : 'Read only'}</span> : null}
                     </div>

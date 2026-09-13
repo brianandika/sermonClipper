@@ -108,9 +108,14 @@ export interface SuggestShortsResponse {
     suggestions: ShortSuggestion[];
 }
 
-// Discriminates the three worker pipelines. Absent ⇒ "sermon" (the original
+// Discriminates the worker pipelines. Absent ⇒ "sermon" (the original
 // landscape trim/cut flow), preserving backward compatibility with existing jobs.
-export type JobKind = "sermon" | "transcribeSource" | "short";
+export type JobKind = "sermon" | "transcribeSource" | "short" | "burnSubtitles";
+
+// Default and max for "sermon"'s configurable fade-in/out length
+// (CreateJobRequest.fadeSeconds).
+export const DEFAULT_FADE_SECONDS = 1;
+export const MAX_FADE_SECONDS = 5;
 
 export interface CreateJobRequest {
     kind?: JobKind;
@@ -132,6 +137,8 @@ export interface CreateJobRequest {
     cropX?: number;
     cropY?: number;
     zoom?: number;
+    // "short": burn captions unless explicitly false (best-effort — degrades to
+    // no captions).
     captions?: boolean;
     // "short" only: append the church end card (a branded 9:16 image) after the
     // clip, with a quick crossfade into it and a 3s hold. Default true.
@@ -143,6 +150,28 @@ export interface CreateJobRequest {
     // "sermon" only: when true (the default), the worker delivers the finished VTT
     // transcript to the configured SermonGuide inbox. Users can opt out per job.
     deliverTranscript?: boolean;
+    // "sermon" only: fade the composed output in/out (both audio and video),
+    // this many seconds at each end. 0 = no fade. Default DEFAULT_FADE_SECONDS
+    // (1s — the original, previously-unconditional behavior), max
+    // MAX_FADE_SECONDS. Dims the output's own existing first/last frames —
+    // does not extend the output's length or read outside [startTime, endTime].
+    fadeSeconds?: number;
+    // "sermon" only: by default every output is scaled/padded to a standard
+    // 1920x1080 canvas. Set true to skip that and keep the source's own
+    // resolution/aspect ratio instead (every segment — and the intro image,
+    // if any — still shares one consistent size for clean concatenation;
+    // that size is just the source's own rather than a forced 1080p).
+    preserveAspectRatio?: boolean;
+    // "transcribeSource" (retry mode) and "burnSubtitles": the OTHER job whose
+    // finished Result.videoPath this one operates on — transcribing it (if it
+    // has no transcript yet) or burning captions into a new derived copy of
+    // it. Must belong to the same session and already have a finished video.
+    sourceJobId?: string;
+    // "burnSubtitles" only, required: the reviewed WebVTT text to burn in,
+    // already 0-based against sourceJobId's own finished video (produced by
+    // transcribing that exact video — see processTranscribeSourceJob's retry
+    // mode). The API rejects the job if this is missing/empty.
+    captionsVtt?: string;
 }
 
 export interface JobResponse {
