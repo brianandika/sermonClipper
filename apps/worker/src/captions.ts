@@ -2,6 +2,26 @@
 // VTT -> ASS caption conversion. Kept in their own module (with no side effects)
 // so they can be unit-tested without booting the worker in main.ts.
 
+// Text wrapping/chunking lives in @sermon-clipper/shared so the web
+// Subtitles-tab preview overlay can call the exact same functions the real
+// burn-in uses below — re-exported here so every other file in this module
+// (and captions.test.ts) can keep importing them from "./captions".
+export {
+    CAPTION_MAX_CHARS_PER_LINE,
+    CAPTION_MAX_LINES,
+    CAPTION_PREFERRED_LINES,
+    chunkCaptions,
+    LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
+    normalizeCaptionText,
+    wrapCaptionLines,
+} from "@sermon-clipper/shared";
+import {
+    CAPTION_MAX_CHARS_PER_LINE,
+    chunkCaptions,
+    LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
+    normalizeCaptionText,
+} from "@sermon-clipper/shared";
+
 export function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
 }
@@ -135,82 +155,6 @@ export function escapeAssText(raw: string): string {
         .replace(/\}/g, ")");
 }
 
-// Captions aim for 2 lines but may stretch to 3 to avoid leaving a lone
-// trailing line (a "hanging" word/line on its own). Each line should comfortably
-// fit the 1080-wide frame at the caption font size.
-export const CAPTION_MAX_CHARS_PER_LINE = 22;
-export const CAPTION_PREFERRED_LINES = 2;
-export const CAPTION_MAX_LINES = 3;
-
-// Flatten a cue's text to a single line: strip inline tags, collapse
-// whitespace, neutralize "{...}" override delimiters. Word-wrapping is applied
-// separately so we control the exact line count. Uppercased by default (the
-// punchy shorts look); pass uppercase=false for standard-looking subtitles.
-export function normalizeCaptionText(raw: string, uppercase = true): string {
-    const cleaned = raw
-        .replace(/<[^>]*>/g, "")
-        .replace(/\{/g, "(")
-        .replace(/\}/g, ")")
-        .replace(/\s+/g, " ")
-        .trim();
-    return uppercase ? cleaned.toUpperCase() : cleaned;
-}
-
-// Greedily word-wrap a flat string into lines no longer than maxCharsPerLine.
-export function wrapCaptionLines(text: string, maxCharsPerLine: number): string[] {
-    const words = text.split(/\s+/).filter((word) => word.length > 0);
-    const lines: string[] = [];
-    let current = "";
-
-    for (const word of words) {
-        if (!current) {
-            current = word;
-        }
-        else if (current.length + 1 + word.length <= maxCharsPerLine) {
-            current += ` ${word}`;
-        }
-        else {
-            lines.push(current);
-            current = word;
-        }
-    }
-
-    if (current) {
-        lines.push(current);
-    }
-
-    return lines;
-}
-
-// Split a flat caption string into a sequence of on-screen captions. Each
-// caption prefers `preferredLines` lines but may take one more (up to
-// `maxLines`) to absorb what would otherwise be a lone trailing line — so a
-// long sermon sentence becomes several 2–3 line captions with no orphan.
-export function chunkCaptions(
-    text: string,
-    maxCharsPerLine = CAPTION_MAX_CHARS_PER_LINE,
-    preferredLines = CAPTION_PREFERRED_LINES,
-    maxLines = CAPTION_MAX_LINES,
-): string[] {
-    const lines = wrapCaptionLines(text, maxCharsPerLine);
-    const chunks: string[] = [];
-    let index = 0;
-
-    while (index < lines.length) {
-        const remaining = lines.length - index;
-        let take = Math.min(preferredLines, remaining);
-        // If taking the preferred count would strand exactly one line at the
-        // end, pull it into this caption instead (up to maxLines).
-        if (remaining - take === 1 && take < maxLines) {
-            take += 1;
-        }
-        chunks.push(lines.slice(index, index + take).join("\\N"));
-        index += take;
-    }
-
-    return chunks;
-}
-
 // ASS uses "H:MM:SS.cc" (centiseconds). Carry rounding at the cs boundary so we
 // never emit ".100".
 export function formatAssTime(totalSeconds: number): string {
@@ -288,7 +232,7 @@ export function landscapeCaptionStyle(width: number, height: number): AssStyleOp
         marginV: Math.round(height * 0.06),
         outline: Math.max(1, Math.round(fontSize * 0.045)),
         shadow: Math.max(0, Math.round(fontSize * 0.012)),
-        maxCharsPerLine: 42,
+        maxCharsPerLine: LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
         uppercase: false,
     };
 }

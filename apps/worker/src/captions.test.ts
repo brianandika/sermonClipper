@@ -15,6 +15,7 @@ import {
     formatAssTime,
     formatSrtTime,
     landscapeCaptionStyle,
+    LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
     normalizeCaptionText,
     parseVttCues,
     parseVttTimestamp,
@@ -141,8 +142,10 @@ test("buildAssFromVtt slices to window and rebases to zero", () => {
     const { content, cueCount } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
     assert.equal(cueCount, 2);
     // Captions are burned in uppercase; short cues stay a single caption.
+    // The balanced wrap splits after "CUE" (10/15 chars) rather than after
+    // "TWO" (20/5 chars) — the more even of the two valid 2-line splits.
     assert.match(content, /Dialogue: 0,0:00:00\.00,0:00:01\.00,Default,,0,0,0,,HELLO WORLD/);
-    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE SPANS TWO\\NLINES/);
+    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE\\NSPANS TWO LINES/);
     assert.doesNotMatch(content, /Way outside/i);
 });
 
@@ -238,6 +241,27 @@ test("wrapCaptionLines never exceeds the per-line budget", () => {
     );
     for (const line of lines) {
         assert.ok(line.length <= CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
+    }
+});
+
+test("wrapCaptionLines balances line lengths instead of cramming the first line full", () => {
+    // A pure greedy fill produces "SECOND CUE SPANS TWO" (20) / "LINES" (5) —
+    // lopsided. The more even 2-line split ("SECOND CUE" / "SPANS TWO LINES",
+    // 10/15) should win instead.
+    const lines = wrapCaptionLines("SECOND CUE SPANS TWO LINES", 22);
+    assert.deepEqual(lines, ["SECOND CUE", "SPANS TWO LINES"]);
+});
+
+test("wrapCaptionLines balances a long real sentence at the landscape width", () => {
+    const text = "but it's just great to have the Bible open in front of us as we look into it. And if you happen";
+    const lines = wrapCaptionLines(text, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE);
+    assert.equal(lines.length, 3);
+    const lengths = lines.map((line) => line.length);
+    // All three lines land close in length — not one long line with a short
+    // leftover, which a plain greedy fill would produce here (42/41/10).
+    assert.ok(Math.max(...lengths) - Math.min(...lengths) <= 4, `lengths ${lengths} too uneven`);
+    for (const line of lines) {
+        assert.ok(line.length <= LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
     }
 });
 

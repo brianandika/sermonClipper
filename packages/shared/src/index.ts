@@ -1,4 +1,5 @@
 export * from "./vtt";
+export * from "./captionText";
 
 export const SESSION_COOKIE_NAME = "sermon_clipper_session";
 

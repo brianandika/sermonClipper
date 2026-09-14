@@ -1,4 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+// Imported by relative path straight to the TypeScript source, not through
+// the built @sermon-clipper/shared package. tsc compiles that package to
+// CommonJS, and neither its barrel's re-exports nor even the leaf module's
+// own plain exports resolve reliably through Vite/Rollup's static analysis
+// of a symlinked npm-workspace package in production builds (confirmed by
+// trial — both "@sermon-clipper/shared" and "@sermon-clipper/shared/captionText"
+// fail with "is not exported by ..." despite Node's require() resolving both
+// fine, and despite the leaf module using plain, statically-visible
+// `exports.x = ...` assignments). Importing the .ts source directly sidesteps
+// the whole CJS interop question: esbuild/Rollup just transpile it like any
+// other same-repo module, no package resolution involved.
+import { chunkCaptions, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, normalizeCaptionText } from '../../../../packages/shared/src/captionText';
 import { CaptionFormat, EditableTranscriptCue, Job, SubtitlesDraft } from '../types';
 import { formatMinSec, parseMinSec } from '../timeFormat';
 import {
@@ -242,6 +254,24 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     [draft.cues, currentTime],
   );
 
+  // The lines actually shown right now, computed with the SAME wrap/chunk
+  // functions the real landscape burn-in uses (see the worker's
+  // buildAssFromVtt + landscapeCaptionStyle) — not the browser's own text
+  // wrapping — so this preview's line breaks (and, for a long cue split into
+  // several on-screen chunks, which chunk is showing right now) match the
+  // burned-in result exactly rather than just approximately.
+  const previewLines = useMemo(() => {
+    const cue = activeCueIndex >= 0 ? draft.cues[activeCueIndex] : null;
+    if (!cue || !cue.text.trim()) return [];
+    const chunks = chunkCaptions(normalizeCaptionText(cue.text, false), LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE);
+    if (chunks.length === 0) return [];
+    const cueDuration = cue.end - cue.start;
+    const perChunk = cueDuration / chunks.length;
+    const elapsed = Math.max(0, currentTime - cue.start);
+    const chunkIndex = perChunk > 0 ? Math.min(chunks.length - 1, Math.floor(elapsed / perChunk)) : 0;
+    return chunks[chunkIndex].split('\\N');
+  }, [draft.cues, activeCueIndex, currentTime]);
+
   useEffect(() => {
     if (activeCueIndex < 0) return;
     cueRowRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -355,12 +385,14 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
           >
             Your browser doesn't support video playback.
           </video>
-          {/* Live WYSIWYG-ish preview of the ACTIVE (possibly edited) cue, so
-              dragging a boundary on the timeline shows immediately where the
-              caption will actually appear/disappear against the picture —
-              not just against the transcript list's numbers. */}
-          {activeCueIndex >= 0 && draft.cues[activeCueIndex]?.text && (
-            <div className="subtitle-preview-overlay">{draft.cues[activeCueIndex].text}</div>
+          {/* Live preview of the ACTIVE (possibly edited) cue, wrapped with the
+              exact same function the real landscape burn-in uses — so dragging
+              a boundary on the timeline shows immediately both WHEN a caption
+              will appear/disappear and how its lines will actually break. */}
+          {previewLines.length > 0 && (
+            <div className="subtitle-preview-overlay">
+              {previewLines.map((line, i) => <div key={i}>{line}</div>)}
+            </div>
           )}
         </div>
       )}
