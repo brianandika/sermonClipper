@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CaptionFormat, EditableTranscriptCue, Job, SubtitlesDraft } from '../types';
+import { formatMinSec, parseMinSec } from '../timeFormat';
 import {
   createBurnSubtitlesJob,
   createRetryTranscriptJob,
@@ -8,6 +9,7 @@ import {
   getResultArtifact,
   getResultTranscriptText,
 } from '../api';
+import SubtitleTimeline from './SubtitleTimeline';
 
 interface SubtitlesFlowProps {
   // The completed sermon job whose video gets captioned. Always has a finished
@@ -76,6 +78,19 @@ function formatTimecode(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
+// Shared by both the numeric Start/End inputs and the timeline drag handles,
+// so a cue can never invert or run past what's actually known about the
+// video. `durationHint` is Infinity until the video's own duration is known
+// (a brief window before onLoadedMetadata fires) so early edits aren't
+// wrongly clamped to 0.
+const MIN_CUE_DURATION = 0.1;
+function clampCueTimes(start: number, end: number, durationHint: number): { start: number; end: number } {
+  const safeDuration = durationHint > 0 ? durationHint : Number.POSITIVE_INFINITY;
+  const s = Math.max(0, Math.min(Number.isFinite(start) ? start : 0, safeDuration - MIN_CUE_DURATION));
+  const e = Math.max(s + MIN_CUE_DURATION, Math.min(Number.isFinite(end) ? end : s + MIN_CUE_DURATION, safeDuration));
+  return { start: s, end: e };
+}
+
 export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: SubtitlesFlowProps) {
   const [loadingCues, setLoadingCues] = useState(false);
   const [cuesError, setCuesError] = useState<string | null>(null);
@@ -87,6 +102,16 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
   const [burnProgress, setBurnProgress] = useState(0);
   const [burnError, setBurnError] = useState<string | null>(null);
   const [burnedJob, setBurnedJob] = useState<Job | null>(null);
+
+  // Playback state for the timeline: currentTime/isPlaying come from the
+  // <video> element itself; videoDuration falls back to the job's own
+  // measured output duration until metadata loads (usually instant, since
+  // it's a same-origin file).
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const cueRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [videoDuration, setVideoDuration] = useState(sourceJob.result?.duration ?? 0);
 
   const hasTranscriptAlready = Boolean(sourceJob.result?.transcriptPath);
 
@@ -180,6 +205,35 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     onDraftChange({ cues: draft.cues.filter((_, i) => i !== index) });
   };
 
+  // Shared commit path for both the numeric Start/End inputs and the timeline
+  // drag handles — always clamps against the video's own duration so a cue
+  // can never invert or run past the end of the video.
+  const updateCueTime = (index: number, patch: { start?: number; end?: number }) => {
+    onDraftChange({
+      cues: draft.cues.map((cue, i) => {
+        if (i !== index) return cue;
+        const { start, end } = clampCueTimes(patch.start ?? cue.start, patch.end ?? cue.end, videoDuration);
+        return { ...cue, start, end };
+      }),
+    });
+  };
+
+  const seekTo = (time: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, time);
+    }
+  };
+
+  const activeCueIndex = useMemo(
+    () => draft.cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
+    [draft.cues, currentTime],
+  );
+
+  useEffect(() => {
+    if (activeCueIndex < 0) return;
+    cueRowRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeCueIndex]);
+
   const handleBurn = async () => {
     if (draft.cues.length === 0) return;
     const isSrt = draft.captionFormat === 'srt';
@@ -272,29 +326,89 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
       </header>
 
       {sourceVideoUrl && (
-        <video controls className="shorts-video" src={sourceVideoUrl} style={{ marginBottom: '1.25rem' }}>
+        <video
+          ref={videoRef}
+          controls
+          className="shorts-video"
+          src={sourceVideoUrl}
+          style={{ marginBottom: '1.25rem' }}
+          onLoadedMetadata={(event) => {
+            const value = event.currentTarget.duration;
+            if (Number.isFinite(value) && value > 0) setVideoDuration(value);
+          }}
+          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+        >
           Your browser doesn't support video playback.
         </video>
+      )}
+
+      {draft.cues.length > 0 && (
+        <SubtitleTimeline
+          cues={draft.cues}
+          duration={videoDuration}
+          currentTime={currentTime}
+          isPlaying={isPlaying}
+          activeCueIndex={activeCueIndex}
+          onSeek={seekTo}
+          onSelectCue={(index) => cueRowRefs.current[index]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}
+          onCueTimeChange={(index, start, end) => updateCueTime(index, { start, end })}
+        />
       )}
 
       <section className="shorts-transcript-editor">
         <div className="shorts-transcript-editor-head">
           <h2 className="shorts-section-title">Transcript</h2>
         </div>
-        <p className="shorts-hint">Fix typos, delete lines you don't want captioned, then choose an output below.</p>
+        <p className="shorts-hint">Fix typos, adjust times, delete lines you don't want captioned, then choose an output below.</p>
         {draft.cues.length === 0 ? (
           <p className="shorts-hint">No transcript cues were found for this video.</p>
         ) : (
           <div className="shorts-transcript-edit-list">
             {draft.cues.map((cue, index) => (
-              <div key={`cue-${index}`} className="shorts-transcript-edit-row">
-                <span className="shorts-cue-time">{formatTimecode(cue.start)}</span>
+              <div
+                key={`cue-${index}`}
+                ref={(el) => { cueRowRefs.current[index] = el; }}
+                className={`shorts-transcript-edit-row${index === activeCueIndex ? ' active' : ''}`}
+              >
+                <button
+                  type="button"
+                  className="shorts-cue-time shorts-cue-time-btn"
+                  title="Jump to this cue"
+                  onClick={() => seekTo(cue.start)}
+                >
+                  {formatTimecode(cue.start)}
+                </button>
+                <input
+                  className="shorts-transcript-edit-time"
+                  type="text"
+                  value={formatMinSec(cue.start)}
+                  placeholder="m:ss.mmm"
+                  aria-label={`Start time for cue at ${formatTimecode(cue.start)}`}
+                  onChange={(event) => {
+                    const parsed = parseMinSec(event.target.value);
+                    if (parsed !== null) updateCueTime(index, { start: parsed });
+                  }}
+                />
+                <span className="shorts-transcript-edit-time-sep">–</span>
+                <input
+                  className="shorts-transcript-edit-time"
+                  type="text"
+                  value={formatMinSec(cue.end)}
+                  placeholder="m:ss.mmm"
+                  aria-label={`End time for cue at ${formatTimecode(cue.start)}`}
+                  onChange={(event) => {
+                    const parsed = parseMinSec(event.target.value);
+                    if (parsed !== null) updateCueTime(index, { end: parsed });
+                  }}
+                />
                 <input
                   className="shorts-transcript-edit-input"
                   type="text"
                   value={cue.text}
                   onChange={(event) => updateCueText(index, event.target.value)}
-                  aria-label={`Cue at ${formatTimecode(cue.start)}`}
+                  aria-label={`Cue text at ${formatTimecode(cue.start)}`}
                 />
                 <button type="button" className="btn remove-clip" title="Delete this cue" onClick={() => removeCue(index)}>
                   ✕
