@@ -112,6 +112,11 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoDuration, setVideoDuration] = useState(sourceJob.result?.duration ?? 0);
+  // The cue last clicked (in the timeline or the transcript list) — kept in
+  // sync both ways, and used to bring that block to the front of the
+  // timeline (see SubtitleTimeline's .selected z-index) so trimming it never
+  // has an edge hidden behind a neighbor it's been dragged to overlap.
+  const [selectedCueIndex, setSelectedCueIndex] = useState<number | null>(null);
 
   const hasTranscriptAlready = Boolean(sourceJob.result?.transcriptPath);
 
@@ -224,6 +229,14 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     }
   };
 
+  // Selecting a cue (from either the timeline or the transcript list) marks
+  // it in both places: the timeline brings it to front, the list scrolls it
+  // into view.
+  const selectCue = (index: number) => {
+    setSelectedCueIndex(index);
+    cueRowRefs.current[index]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+
   const activeCueIndex = useMemo(
     () => draft.cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
     [draft.cues, currentTime],
@@ -326,22 +339,30 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
       </header>
 
       {sourceVideoUrl && (
-        <video
-          ref={videoRef}
-          controls
-          className="shorts-video"
-          src={sourceVideoUrl}
-          style={{ marginBottom: '1.25rem' }}
-          onLoadedMetadata={(event) => {
-            const value = event.currentTarget.duration;
-            if (Number.isFinite(value) && value > 0) setVideoDuration(value);
-          }}
-          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-        >
-          Your browser doesn't support video playback.
-        </video>
+        <div className="subtitle-preview-video-wrap" style={{ marginBottom: '1.25rem' }}>
+          <video
+            ref={videoRef}
+            controls
+            className="shorts-video"
+            src={sourceVideoUrl}
+            onLoadedMetadata={(event) => {
+              const value = event.currentTarget.duration;
+              if (Number.isFinite(value) && value > 0) setVideoDuration(value);
+            }}
+            onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+          >
+            Your browser doesn't support video playback.
+          </video>
+          {/* Live WYSIWYG-ish preview of the ACTIVE (possibly edited) cue, so
+              dragging a boundary on the timeline shows immediately where the
+              caption will actually appear/disappear against the picture —
+              not just against the transcript list's numbers. */}
+          {activeCueIndex >= 0 && draft.cues[activeCueIndex]?.text && (
+            <div className="subtitle-preview-overlay">{draft.cues[activeCueIndex].text}</div>
+          )}
+        </div>
       )}
 
       {draft.cues.length > 0 && (
@@ -351,8 +372,9 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
           currentTime={currentTime}
           isPlaying={isPlaying}
           activeCueIndex={activeCueIndex}
+          selectedCueIndex={selectedCueIndex}
           onSeek={seekTo}
-          onSelectCue={(index) => cueRowRefs.current[index]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}
+          onSelectCue={selectCue}
           onCueTimeChange={(index, start, end) => updateCueTime(index, { start, end })}
         />
       )}
@@ -371,6 +393,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
                 key={`cue-${index}`}
                 ref={(el) => { cueRowRefs.current[index] = el; }}
                 className={`shorts-transcript-edit-row${index === activeCueIndex ? ' active' : ''}`}
+                onClick={() => setSelectedCueIndex(index)}
               >
                 <button
                   type="button"

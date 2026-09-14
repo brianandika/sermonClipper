@@ -9,6 +9,11 @@ interface SubtitleTimelineProps {
   currentTime: number;
   isPlaying: boolean;
   activeCueIndex: number;
+  // The cue last clicked or dragged (lifted to SubtitlesFlow so the
+  // transcript list can set/reflect it too). Brought to the front (z-index)
+  // so trimming/extending it never has its own edge hidden behind a
+  // neighbor it's been dragged to overlap.
+  selectedCueIndex: number | null;
   onSeek: (time: number) => void;
   onSelectCue: (index: number) => void;
   // Committed only on drag release (not on every pointermove) — see the
@@ -94,6 +99,7 @@ export default function SubtitleTimeline({
   currentTime,
   isPlaying,
   activeCueIndex,
+  selectedCueIndex,
   onSeek,
   onSelectCue,
   onCueTimeChange,
@@ -203,8 +209,8 @@ export default function SubtitleTimeline({
         }
       }
       else {
-        // A tap (no drag): select the cue and jump playback to its start.
-        onSelectCueRef.current(drag.cueIndex);
+        // A tap (no drag) beyond selecting (already done on pointerdown):
+        // also jump playback to the cue's start.
         const cue = cuesRef.current[drag.cueIndex];
         if (cue) onSeekRef.current(cue.start);
       }
@@ -262,6 +268,12 @@ export default function SubtitleTimeline({
       origEnd: cue.end,
       dragging: false,
     };
+    // Select (and so bring to front) as soon as the interaction starts, not
+    // just on a plain tap — a click that's about to become a resize drag
+    // still needs its block brought forward FIRST, so the click that starts
+    // the very next drag on the now-uncovered edge actually lands on it
+    // rather than on whatever neighbor used to be drawn on top.
+    onSelectCueRef.current(index);
   };
 
   // A normal vertical mouse wheel scrolls the (horizontal-only) timeline
@@ -316,10 +328,11 @@ export default function SubtitleTimeline({
               const left = start * pxPerSecond;
               const width = Math.max(6, (end - start) * pxPerSecond);
               const isActive = index === activeCueIndex;
+              const isSelected = index === selectedCueIndex;
               return (
                 <div
                   key={index}
-                  className={`subtitle-timeline-block${isActive ? ' active' : ''}${preview ? ' dragging' : ''}`}
+                  className={`subtitle-timeline-block${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}${preview ? ' dragging' : ''}`}
                   style={{ left, width }}
                   title={cue.text || '(empty cue)'}
                   onPointerDown={(event) => onBlockPointerDown(event, index, 'move')}
