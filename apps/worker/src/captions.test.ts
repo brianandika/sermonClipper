@@ -265,6 +265,28 @@ test("wrapCaptionLines balances a long real sentence at the landscape width", ()
     }
 });
 
+test("chunkCaptions with maxLines===preferredLines never produces a 3-line caption", () => {
+    // Same sentence as above: wrapCaptionLines alone needs 3 lines at this
+    // width. With maxLines capped at preferredLines (landscapeCaptionStyle's
+    // setting), chunkCaptions must rebalance into two 2-line captions
+    // instead of one 3-line one (or a 2-line + stranded 1-line orphan).
+    const text = "but it's just great to have the Bible open in front of us as we look into it. And if you happen";
+    const chunks = chunkCaptions(text, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, 2, 2);
+    assert.equal(chunks.length, 2);
+    for (const chunk of chunks) {
+        const lines = chunk.split("\\N");
+        assert.equal(lines.length, 2, `chunk "${chunk}" should have exactly 2 lines`);
+        for (const line of lines) {
+            assert.ok(line.length <= LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
+        }
+    }
+});
+
+test("chunkCaptions with maxLines===preferredLines leaves short text alone (no padding to 2 lines)", () => {
+    const chunks = chunkCaptions("Hello world", LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, 2, 2);
+    assert.deepEqual(chunks, ["Hello world"]);
+});
+
 test("chunkCaptions keeps captions at 2–3 lines with no lone trailing line", () => {
     const chunks = chunkCaptions(
         "WHICH IS THAT GOD FREES US IN CHRIST TO LIVE GODLY LIVES OF SELF CONTROL AND INTENTIONALITY FOR HIM",
@@ -310,6 +332,25 @@ test("buildAssFromVtt splits a long cue into multiple ≤2-line captions timed i
         assert.ok(s >= prevEnd - 1e-6, "captions do not overlap");
         assert.ok(e > s, "caption has positive duration");
         prevEnd = e;
+    }
+});
+
+test("buildAssFromVtt with landscapeCaptionStyle never emits more than 2 lines per caption", () => {
+    const vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n"
+        + "but it's just great to have the Bible open in front of us as we look into it. And if you happen\n";
+    const style = landscapeCaptionStyle(1920, 1080);
+    const { content, cueCount } = buildAssFromVtt(vtt, 0, 9, style);
+    // Would be a single 3-line caption under the shorts-style "allow 3 to
+    // avoid an orphan" rule; landscape's strict cap instead rebalances into
+    // two 2-line captions.
+    assert.equal(cueCount, 2, "rebalances into two 2-line captions, not one 3-line one");
+
+    const dialogues = content.split("\n").filter((line) => line.startsWith("Dialogue:"));
+    for (const line of dialogues) {
+        // Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+        // — Text is everything after the 9th comma (it may itself contain commas).
+        const text = line.slice("Dialogue: ".length).split(",").slice(9).join(",");
+        assert.equal(text.split("\\N").length, 2, `"${text}" should have exactly 2 lines`);
     }
 });
 

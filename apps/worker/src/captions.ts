@@ -17,6 +17,8 @@ export {
 } from "@sermon-clipper/shared";
 import {
     CAPTION_MAX_CHARS_PER_LINE,
+    CAPTION_MAX_LINES,
+    CAPTION_PREFERRED_LINES,
     chunkCaptions,
     LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
     normalizeCaptionText,
@@ -199,6 +201,10 @@ export interface AssStyleOptions {
     // Word-wrap width and case behavior for chunkCaptions/normalizeCaptionText.
     maxCharsPerLine: number;
     uppercase: boolean;
+    // Passed to chunkCaptions as its own maxLines: shorts allows growing to 3
+    // lines to avoid stranding an orphan; landscape caps strictly at
+    // CAPTION_PREFERRED_LINES (2) and rebalances instead — see chunkCaptions.
+    maxLines: number;
 }
 
 // The existing shorts look: 1080x1920, 64pt, bottom third, punchy uppercase
@@ -213,6 +219,7 @@ export const SHORT_CAPTION_STYLE: AssStyleOptions = {
     shadow: 2,
     maxCharsPerLine: CAPTION_MAX_CHARS_PER_LINE,
     uppercase: true,
+    maxLines: CAPTION_MAX_LINES,
 };
 
 // Standard subtitles for a landscape clip at the source's own resolution: text
@@ -234,6 +241,9 @@ export function landscapeCaptionStyle(width: number, height: number): AssStyleOp
         shadow: Math.max(0, Math.round(fontSize * 0.012)),
         maxCharsPerLine: LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
         uppercase: false,
+        // Strictly 2 lines, never 3 — unlike shorts, which allows growing to
+        // 3 to avoid an orphan (see chunkCaptions).
+        maxLines: CAPTION_PREFERRED_LINES,
     };
 }
 
@@ -294,6 +304,8 @@ export function buildAssFromVtt(
         const chunks = chunkCaptions(
             normalizeCaptionText(cue.text, style.uppercase),
             style.maxCharsPerLine,
+            CAPTION_PREFERRED_LINES,
+            style.maxLines,
         );
         if (chunks.length === 0) {
             continue;

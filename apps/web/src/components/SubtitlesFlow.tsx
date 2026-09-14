@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // `exports.x = ...` assignments). Importing the .ts source directly sidesteps
 // the whole CJS interop question: esbuild/Rollup just transpile it like any
 // other same-repo module, no package resolution involved.
-import { chunkCaptions, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, normalizeCaptionText } from '../../../../packages/shared/src/captionText';
+import { CAPTION_PREFERRED_LINES, chunkCaptions, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, normalizeCaptionText } from '../../../../packages/shared/src/captionText';
 import { CaptionFormat, EditableTranscriptCue, Job, SubtitlesDraft } from '../types';
 import { formatMinSec, parseMinSec } from '../timeFormat';
 import {
@@ -263,7 +263,14 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
   const previewLines = useMemo(() => {
     const cue = activeCueIndex >= 0 ? draft.cues[activeCueIndex] : null;
     if (!cue || !cue.text.trim()) return [];
-    const chunks = chunkCaptions(normalizeCaptionText(cue.text, false), LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE);
+    // preferredLines and maxLines both = CAPTION_PREFERRED_LINES (2), matching
+    // landscapeCaptionStyle's strict cap in the worker — never a 3-line caption.
+    const chunks = chunkCaptions(
+      normalizeCaptionText(cue.text, false),
+      LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
+      CAPTION_PREFERRED_LINES,
+      CAPTION_PREFERRED_LINES,
+    );
     if (chunks.length === 0) return [];
     const cueDuration = cue.end - cue.start;
     const perChunk = cueDuration / chunks.length;
