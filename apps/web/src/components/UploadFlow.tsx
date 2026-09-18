@@ -7,7 +7,7 @@ interface UploadFlowProps {
   onUploadForShorts: (asset: Asset) => void;
 }
 
-type UploadIntent = 'clip' | 'shorts';
+type UploadIntent = 'sermon' | 'shorts';
 
 export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowProps) {
   const [file, setFile] = useState<File | null>(null);
@@ -73,9 +73,9 @@ export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowP
             type="button"
             className="btn"
             disabled={!file || uploading}
-            onClick={() => upload('clip')}
+            onClick={() => upload('sermon')}
           >
-            {busyLabel('clip') ?? 'Upload for Clipping'}
+            {busyLabel('sermon') ?? 'Upload for Clipping'}
           </button>
           <button
             type="button"
@@ -90,8 +90,10 @@ export default function UploadFlow({ onSuccess, onUploadForShorts }: UploadFlowP
       </div>
 
       <p style={{ marginTop: '0.75rem', color: '#64748b', fontSize: '0.9rem' }}>
-        <strong>Clipping</strong> opens the editor to trim the sermon.{' '}
-        <strong>Shorts</strong> transcribes the video so you can cut 9:16 vertical clips from it.
+        <strong>Clipping</strong> opens the editor to trim any video — with an optional intro image, fade,
+        and standard-1080p or original aspect ratio. <strong>Shorts</strong> transcribes the video so you
+        can cut 9:16 vertical clips from it. Once a clip finishes processing, you can add burned-in
+        subtitles to it from the Jobs or Results page.
       </p>
 
       {error && <p style={{ color: 'red', marginTop: '1rem' }}>{error}</p>}

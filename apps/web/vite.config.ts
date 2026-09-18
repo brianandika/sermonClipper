@@ -8,7 +8,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        // Overridable so a local checkout can point at an api instance on a
+        // non-default port (e.g. running a second api+worker for a worktree
+        // alongside another one already using :3000).
+        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:3000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },

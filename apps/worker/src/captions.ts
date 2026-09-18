@@ -2,6 +2,28 @@
 // VTT -> ASS caption conversion. Kept in their own module (with no side effects)
 // so they can be unit-tested without booting the worker in main.ts.
 
+// Text wrapping/chunking lives in @sermon-clipper/shared so the web
+// Subtitles-tab preview overlay can call the exact same functions the real
+// burn-in uses below — re-exported here so every other file in this module
+// (and captions.test.ts) can keep importing them from "./captions".
+export {
+    CAPTION_MAX_CHARS_PER_LINE,
+    CAPTION_MAX_LINES,
+    CAPTION_PREFERRED_LINES,
+    chunkCaptions,
+    LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
+    normalizeCaptionText,
+    wrapCaptionLines,
+} from "@sermon-clipper/shared";
+import {
+    CAPTION_MAX_CHARS_PER_LINE,
+    CAPTION_MAX_LINES,
+    CAPTION_PREFERRED_LINES,
+    chunkCaptions,
+    LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
+    normalizeCaptionText,
+} from "@sermon-clipper/shared";
+
 export function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
 }
@@ -135,81 +157,6 @@ export function escapeAssText(raw: string): string {
         .replace(/\}/g, ")");
 }
 
-// Captions aim for 2 lines but may stretch to 3 to avoid leaving a lone
-// trailing line (a "hanging" word/line on its own). Each line should comfortably
-// fit the 1080-wide frame at the caption font size.
-export const CAPTION_MAX_CHARS_PER_LINE = 22;
-export const CAPTION_PREFERRED_LINES = 2;
-export const CAPTION_MAX_LINES = 3;
-
-// Flatten a cue's text to a single upper-case line: strip inline tags, collapse
-// whitespace, neutralize "{...}" override delimiters. Word-wrapping is applied
-// separately so we control the exact line count.
-export function normalizeCaptionText(raw: string): string {
-    return raw
-        .replace(/<[^>]*>/g, "")
-        .replace(/\{/g, "(")
-        .replace(/\}/g, ")")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toUpperCase();
-}
-
-// Greedily word-wrap a flat string into lines no longer than maxCharsPerLine.
-export function wrapCaptionLines(text: string, maxCharsPerLine: number): string[] {
-    const words = text.split(/\s+/).filter((word) => word.length > 0);
-    const lines: string[] = [];
-    let current = "";
-
-    for (const word of words) {
-        if (!current) {
-            current = word;
-        }
-        else if (current.length + 1 + word.length <= maxCharsPerLine) {
-            current += ` ${word}`;
-        }
-        else {
-            lines.push(current);
-            current = word;
-        }
-    }
-
-    if (current) {
-        lines.push(current);
-    }
-
-    return lines;
-}
-
-// Split a flat caption string into a sequence of on-screen captions. Each
-// caption prefers `preferredLines` lines but may take one more (up to
-// `maxLines`) to absorb what would otherwise be a lone trailing line — so a
-// long sermon sentence becomes several 2–3 line captions with no orphan.
-export function chunkCaptions(
-    text: string,
-    maxCharsPerLine = CAPTION_MAX_CHARS_PER_LINE,
-    preferredLines = CAPTION_PREFERRED_LINES,
-    maxLines = CAPTION_MAX_LINES,
-): string[] {
-    const lines = wrapCaptionLines(text, maxCharsPerLine);
-    const chunks: string[] = [];
-    let index = 0;
-
-    while (index < lines.length) {
-        const remaining = lines.length - index;
-        let take = Math.min(preferredLines, remaining);
-        // If taking the preferred count would strand exactly one line at the
-        // end, pull it into this caption instead (up to maxLines).
-        if (remaining - take === 1 && take < maxLines) {
-            take += 1;
-        }
-        chunks.push(lines.slice(index, index + take).join("\\N"));
-        index += take;
-    }
-
-    return chunks;
-}
-
 // ASS uses "H:MM:SS.cc" (centiseconds). Carry rounding at the cs boundary so we
 // never emit ".100".
 export function formatAssTime(totalSeconds: number): string {
@@ -238,26 +185,90 @@ export function formatAssTime(totalSeconds: number): string {
     return `${hours}:${mm}:${ss}.${cc}`;
 }
 
-const ASS_HEADER = [
-    "[Script Info]",
-    "ScriptType: v4.00+",
-    "PlayResX: 1080",
-    "PlayResY: 1920",
-    // WrapStyle 0 = smart auto-wrapping, so long lines wrap instead of running
-    // off the sides of the frame.
-    "WrapStyle: 0",
-    "ScaledBorderAndShadow: yes",
-    "",
-    "[V4+ Styles]",
-    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    // Bold white text, thick black outline + drop shadow, bottom-centered.
-    // Wide L/R margins keep text off the edges; MarginV=560 sits the block in
-    // the lower third of the 1920-tall frame.
-    "Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,90,90,560,1",
-    "",
-    "[Events]",
-    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-].join("\n");
+export interface AssStyleOptions {
+    playResX: number;
+    playResY: number;
+    fontSize: number;
+    marginLR: number;
+    marginV: number;
+    // Outline (stroke) and drop-shadow thickness, in the same units as
+    // fontSize. Shorts uses a thick, punchy outline on purpose; a landscape
+    // clip wants a much thinner, conventional-subtitle stroke — a thick one
+    // at this font size reads as "bubbly" (letters look blobby, especially at
+    // small point sizes and on curved glyphs).
+    outline: number;
+    shadow: number;
+    // Word-wrap width and case behavior for chunkCaptions/normalizeCaptionText.
+    maxCharsPerLine: number;
+    uppercase: boolean;
+    // Passed to chunkCaptions as its own maxLines: shorts allows growing to 3
+    // lines to avoid stranding an orphan; landscape caps strictly at
+    // CAPTION_PREFERRED_LINES (2) and rebalances instead — see chunkCaptions.
+    maxLines: number;
+}
+
+// The existing shorts look: 1080x1920, 64pt, bottom third, punchy uppercase
+// captions wrapped tight (right for a narrow vertical frame), thick outline.
+export const SHORT_CAPTION_STYLE: AssStyleOptions = {
+    playResX: 1080,
+    playResY: 1920,
+    fontSize: 64,
+    marginLR: 90,
+    marginV: 560,
+    outline: 5,
+    shadow: 2,
+    maxCharsPerLine: CAPTION_MAX_CHARS_PER_LINE,
+    uppercase: true,
+    maxLines: CAPTION_MAX_LINES,
+};
+
+// Standard subtitles for a landscape clip at the source's own resolution: text
+// sized as a fraction of frame height so it reads the same on 720p and 4K,
+// sat just above the bottom edge like conventional burned-in subs, wrapped
+// wider (a landscape frame has much more horizontal room than a 9:16 short),
+// left in natural case rather than shouted uppercase, and a thin outline —
+// scaled off THIS style's own fontSize, not shorts' fixed 64pt, so it stays
+// proportionally crisp at any resolution rather than looking bubbly.
+export function landscapeCaptionStyle(width: number, height: number): AssStyleOptions {
+    const fontSize = Math.max(16, Math.round(height * 0.045));
+    return {
+        playResX: Math.max(2, Math.round(width)),
+        playResY: Math.max(2, Math.round(height)),
+        fontSize,
+        marginLR: Math.round(width * 0.06),
+        marginV: Math.round(height * 0.06),
+        outline: Math.max(1, Math.round(fontSize * 0.045)),
+        shadow: Math.max(0, Math.round(fontSize * 0.012)),
+        maxCharsPerLine: LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
+        uppercase: false,
+        // Strictly 2 lines, never 3 — unlike shorts, which allows growing to
+        // 3 to avoid an orphan (see chunkCaptions).
+        maxLines: CAPTION_PREFERRED_LINES,
+    };
+}
+
+function buildAssHeader(style: AssStyleOptions): string {
+    return [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        `PlayResX: ${style.playResX}`,
+        `PlayResY: ${style.playResY}`,
+        // WrapStyle 0 = smart auto-wrapping, so long lines wrap instead of running
+        // off the sides of the frame.
+        "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        // Bold white text, black outline + drop shadow, bottom-centered. Wide
+        // L/R margins keep text off the edges; MarginV sits the block just
+        // above the bottom edge.
+        `Style: Default,Arial,${style.fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,${style.outline},${style.shadow},2,${style.marginLR},${style.marginLR},${style.marginV},1`,
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ].join("\n");
+}
 
 export interface AssBuildResult {
     content: string;
@@ -266,8 +277,14 @@ export interface AssBuildResult {
 
 // Build an ASS subtitle file covering the clip window [clipStart, clipEnd].
 // Cues that overlap the window are clipped to it and rebased so the clip starts
-// at t=0; cues entirely outside are dropped.
-export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number): AssBuildResult {
+// at t=0; cues entirely outside are dropped. style defaults to the original
+// shorts look so existing callers (and captions.test.ts) are unaffected.
+export function buildAssFromVtt(
+    vtt: string,
+    clipStart: number,
+    clipEnd: number,
+    style: AssStyleOptions = SHORT_CAPTION_STYLE,
+): AssBuildResult {
     const cues = parseVttCues(vtt);
     const events: string[] = [];
 
@@ -284,7 +301,12 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
 
         // Split a long cue into a sequence of 2–3 line captions (never a lone
         // trailing line) and spread the cue's on-screen time evenly across them.
-        const chunks = chunkCaptions(normalizeCaptionText(cue.text));
+        const chunks = chunkCaptions(
+            normalizeCaptionText(cue.text, style.uppercase),
+            style.maxCharsPerLine,
+            CAPTION_PREFERRED_LINES,
+            style.maxLines,
+        );
         if (chunks.length === 0) {
             continue;
         }
@@ -297,11 +319,73 @@ export function buildAssFromVtt(vtt: string, clipStart: number, clipEnd: number)
         });
     }
 
+    const header = buildAssHeader(style);
     const content = events.length > 0
-        ? `${ASS_HEADER}\n${events.join("\n")}\n`
-        : `${ASS_HEADER}\n`;
+        ? `${header}\n${events.join("\n")}\n`
+        : `${header}\n`;
 
     return { content, cueCount: events.length };
+}
+
+// SRT timestamp: "HH:MM:SS,mmm" (comma decimal, unlike ASS's centisecond dot).
+export function formatSrtTime(totalSeconds: number): string {
+    const clamped = Math.max(0, totalSeconds);
+    let hours = Math.floor(clamped / 3600);
+    let minutes = Math.floor((clamped % 3600) / 60);
+    let seconds = Math.floor(clamped % 60);
+    let millis = Math.round((clamped - Math.floor(clamped)) * 1000);
+
+    if (millis === 1000) {
+        millis = 0;
+        seconds += 1;
+        if (seconds === 60) {
+            seconds = 0;
+            minutes += 1;
+            if (minutes === 60) {
+                minutes = 0;
+                hours += 1;
+            }
+        }
+    }
+
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(millis).padStart(3, "0")}`;
+}
+
+export interface SrtBuildResult {
+    content: string;
+    cueCount: number;
+}
+
+// Build a plain .srt document covering [clipStart, clipEnd], clipping/rebasing
+// cues the same way buildAssFromVtt does. Unlike the burn-in path, text keeps
+// its natural case and is never re-wrapped into 2-3 line on-screen chunks —
+// each cue becomes one flat SRT block — since this is a portable file the
+// user may re-edit in other software.
+export function buildSrtFromVtt(vtt: string, clipStart: number, clipEnd: number): SrtBuildResult {
+    const cues = parseVttCues(vtt);
+    const blocks: string[] = [];
+
+    for (const cue of cues) {
+        if (cue.end <= clipStart || cue.start >= clipEnd) {
+            continue;
+        }
+
+        const start = Math.max(0, cue.start - clipStart);
+        const end = Math.min(clipEnd, cue.end) - clipStart;
+        if (end <= start) {
+            continue;
+        }
+
+        const text = normalizeCaptionText(cue.text, false);
+        if (!text) {
+            continue;
+        }
+
+        blocks.push(`${blocks.length + 1}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${text}`);
+    }
+
+    const content = blocks.length > 0 ? `${blocks.join("\n\n")}\n` : "";
+    return { content, cueCount: blocks.length };
 }
 
 // Escape a file path for use inside an ffmpeg "-vf" filtergraph value (the

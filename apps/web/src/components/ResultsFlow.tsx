@@ -6,6 +6,7 @@ interface ResultsFlowProps {
   job: Job;
   result: Result;
   onCreateShorts: (job: Job) => void;
+  onAddSubtitles: (job: Job) => void;
   shortsBusy: boolean;
 }
 
@@ -37,7 +38,7 @@ function getRequestedBaseName(job: Job): string | undefined {
   return trimmed.replace(/\.[^.]+$/, '');
 }
 
-export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }: ResultsFlowProps) {
+export default function ResultsFlow({ job, result, onCreateShorts, onAddSubtitles, shortsBusy }: ResultsFlowProps) {
   const [currentJob, setCurrentJob] = useState(job);
   const [currentResult, setCurrentResult] = useState(result);
 
@@ -91,12 +92,16 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
   const audioUrl = getResultArtifact(currentResult.resultId, 'audio');
   const videoUrl = getResultArtifact(currentResult.resultId, 'video');
   const transcriptUrl = getResultArtifact(currentResult.resultId, 'transcript');
+  // Same transcript, converted to .srt on the fly by the API (no separate job
+  // or storage — see ResultsController.getSrtArtifact).
+  const srtUrl = getResultArtifact(currentResult.resultId, 'srt');
   // Prefer the worker's actual measured output duration (accounts for removed
   // middle clips and crossfades); fall back to the kept-span estimate.
   const requestedBaseName = getRequestedBaseName(currentJob);
   const audioDownloadName = ensureExtension(requestedBaseName, '.mp3', 'result.mp3');
   const videoDownloadName = ensureExtension(requestedBaseName, '.mp4', 'result.mp4');
   const transcriptDownloadName = `${requestedBaseName?.trim() || 'transcript'}.vtt`;
+  const srtDownloadName = `${requestedBaseName?.trim() || 'transcript'}.srt`;
   const isVideoReady = Boolean(currentResult.videoPath);
   const isAudioReady = Boolean(currentResult.audioPath);
   const isTranscriptReady = Boolean(currentResult.transcriptPath);
@@ -128,6 +133,18 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
           </div>
           <button type="button" className="btn" disabled={shortsBusy} onClick={() => onCreateShorts(currentJob)}>
             {shortsBusy ? 'Opening…' : 'Open Shorts'}
+          </button>
+        </div>
+      )}
+
+      {currentJob.status === 'completed' && Boolean(currentResult.videoPath) && (currentJob.payload.kind ?? 'sermon') === 'sermon' && (
+        <div className="results-shorts-cta">
+          <div>
+            <p className="results-shorts-cta-title">💬 Add burned-in subtitles</p>
+            <p className="results-shorts-cta-copy">Review the transcript, then burn it into a new copy of this video.</p>
+          </div>
+          <button type="button" className="btn" style={{ background: '#7c3aed' }} onClick={() => onAddSubtitles(currentJob)}>
+            Add Subtitles
           </button>
         </div>
       )}
@@ -196,9 +213,14 @@ export default function ResultsFlow({ job, result, onCreateShorts, shortsBusy }:
                     background: '#fff',
                   }}
                 />
-                <a href={transcriptUrl} download={transcriptDownloadName} className="btn results-download-btn">
-                  Download Captions (VTT)
-                </a>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <a href={transcriptUrl} download={transcriptDownloadName} className="btn results-download-btn">
+                    Download Captions (VTT)
+                  </a>
+                  <a href={srtUrl} download={srtDownloadName} className="btn results-download-btn">
+                    Download Captions (SRT)
+                  </a>
+                </div>
               </>
             ) : (
               <p className="results-pending-copy">Transcript is generated after the video finishes encoding.</p>

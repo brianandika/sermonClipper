@@ -19,13 +19,11 @@ export interface Asset {
   updatedAt: string;
 }
 
-export type JobKind = 'sermon' | 'transcribeSource' | 'short';
+export type JobKind = 'sermon' | 'transcribeSource' | 'short' | 'burnSubtitles';
 
-export interface Clip {
-  id?: string;
-  startTime: number;
-  endTime: number;
-}
+// "burnSubtitles" only: hard-burn the transcript into a new derived video, or
+// export it as a plain .srt file instead (no video re-render). Default 'burned'.
+export type CaptionFormat = 'burned' | 'srt';
 
 export type HardwareOption = 'auto' | 'cpu' | 'intel' | 'cuda' | 'apple' | 'vaapi';
 
@@ -74,6 +72,11 @@ export interface Job {
     endCard?: boolean;
     title?: string;
     parentJobId?: string;
+    fadeSeconds?: number;
+    preserveAspectRatio?: boolean;
+    sourceJobId?: string;
+    captionsVtt?: string;
+    captionFormat?: CaptionFormat;
   };
   failureReason: string | null;
   createdAt: string;
@@ -99,11 +102,38 @@ export interface Result {
   audioPath: string | null;
   videoPath: string | null;
   transcriptPath?: string | null;
+  srtPath?: string | null;
   manifestPath?: string | null;
   sizeBytes?: string | null;
   duration?: number | null;
   expiresAt: string;
   createdAt: string;
+}
+
+// One line of a transcript, as edited/reviewed client-side (never persisted
+// until "Burn in subtitles" is clicked). Mirrors the API's TranscriptCue.
+export interface EditableTranscriptCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+// SubtitlesFlow's per-source-job state, lifted to App so switching tabs
+// (which unmounts it) never loses the loaded/edited transcript or an
+// in-flight prepare-transcript job — the same reason ShortsFlow/the old
+// ClipFlow lift their own state. Unlike Clip's old draft, there's no
+// start/end/staleness to track here at all: this operates on one already-
+// finished video in full, so the transcript never goes stale underneath it.
+export interface SubtitlesDraft {
+  sourceJobId: string;
+  cues: EditableTranscriptCue[];
+  // Whether `cues` reflect a loaded/prepared transcript yet (distinct from
+  // `cues.length === 0`, which could also just mean an empty transcript).
+  cuesLoaded: boolean;
+  prepJobId: string | null;
+  // User's choice for the export action below, defaulting to 'burned' (the
+  // original always-burn behavior).
+  captionFormat: CaptionFormat;
 }
 
 // One AI-suggested shorts moment from the sermon transcript (heading +

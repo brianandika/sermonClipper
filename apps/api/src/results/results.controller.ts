@@ -1,7 +1,8 @@
 import { Controller, Get, NotFoundException, Param, Req, Res } from "@nestjs/common";
+import { readFile } from "node:fs/promises";
 import type { Request } from "express";
 import type { Response } from "express";
-import { SESSION_COOKIE_NAME, type ResultResponse } from "@sermon-clipper/shared";
+import { SESSION_COOKIE_NAME, vttToSrt, type ResultResponse } from "@sermon-clipper/shared";
 import { SessionService } from "../sessions/session.service";
 import { ResultsService } from "./results.service";
 
@@ -65,5 +66,35 @@ export class ResultsController {
         }
         response.type("text/vtt");
         response.sendFile(result.transcriptPath);
+    }
+
+    // Serves the .srt export. Two sources, in priority order: a "burnSubtitles"
+    // job's own pre-generated file (result.srtPath, written by the worker), or
+    // — for a plain sermon result with only a .vtt transcript — a conversion
+    // done on the fly here. Either way this is the same download the
+    // Subtitles/Results UI links to; the caller doesn't need to know which
+    // path produced it.
+    @Get(":resultId/srt")
+    async getSrtArtifact(
+        @Req() request: Request,
+        @Res() response: Response,
+        @Param("resultId") resultId: string,
+    ): Promise<void> {
+        const session = await this.sessionService.requireSession(request.cookies?.[SESSION_COOKIE_NAME]);
+        const result = await this.resultsService.getOwnedResultById(session.id, resultId);
+
+        response.type("application/x-subrip");
+
+        if (result.srtPath) {
+            response.sendFile(result.srtPath);
+            return;
+        }
+
+        if (!result.transcriptPath) {
+            throw new NotFoundException("No transcript is available to export as SRT");
+        }
+
+        const vtt = await readFile(result.transcriptPath, "utf8");
+        response.send(vttToSrt(vtt));
     }
 }

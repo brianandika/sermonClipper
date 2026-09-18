@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
     buildAssFromVtt,
     buildShortVideoFilter,
+    buildSrtFromVtt,
     CAPTION_MAX_CHARS_PER_LINE,
     chunkCaptions,
     computeShortCrop,
@@ -12,6 +13,9 @@ import {
     escapeAssText,
     evenFloor,
     formatAssTime,
+    formatSrtTime,
+    landscapeCaptionStyle,
+    LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE,
     normalizeCaptionText,
     parseVttCues,
     parseVttTimestamp,
@@ -138,8 +142,10 @@ test("buildAssFromVtt slices to window and rebases to zero", () => {
     const { content, cueCount } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
     assert.equal(cueCount, 2);
     // Captions are burned in uppercase; short cues stay a single caption.
+    // The balanced wrap splits after "CUE" (10/15 chars) rather than after
+    // "TWO" (20/5 chars) — the more even of the two valid 2-line splits.
     assert.match(content, /Dialogue: 0,0:00:00\.00,0:00:01\.00,Default,,0,0,0,,HELLO WORLD/);
-    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE SPANS TWO\\NLINES/);
+    assert.match(content, /Dialogue: 0,0:00:01\.00,0:00:02\.00,Default,,0,0,0,,SECOND CUE\\NSPANS TWO LINES/);
     assert.doesNotMatch(content, /Way outside/i);
 });
 
@@ -157,6 +163,71 @@ test("buildAssFromVtt with no cues in range still yields a valid header", () => 
     assert.doesNotMatch(content, /Dialogue:/);
 });
 
+// --- formatSrtTime / buildSrtFromVtt (SRT export) --------------------------
+test("formatSrtTime uses comma decimal and rounds milliseconds with carry", () => {
+    assert.equal(formatSrtTime(0), "00:00:00,000");
+    assert.equal(formatSrtTime(3661.25), "01:01:01,250");
+    assert.equal(formatSrtTime(1.9999), "00:00:02,000"); // rounds up, carries
+});
+
+test("buildSrtFromVtt slices to window, rebases to zero, and numbers sequentially", () => {
+    const { content, cueCount } = buildSrtFromVtt(SAMPLE_VTT, 2, 4);
+    assert.equal(cueCount, 2);
+    assert.match(content, /^1\n00:00:00,000 --> 00:00:01,000\nHello world/);
+    assert.match(content, /2\n00:00:01,000 --> 00:00:02,000\nSecond cue spans two lines/);
+    assert.doesNotMatch(content, /Way outside/i);
+});
+
+test("buildSrtFromVtt keeps natural case and does not re-wrap into 2-3 line chunks like the burn-in path does", () => {
+    const { content } = buildSrtFromVtt(SAMPLE_VTT, 0, 20);
+    assert.match(content, /Hello world/);
+    assert.doesNotMatch(content, /HELLO WORLD/);
+    // A multi-line VTT cue collapses to one flat line per SRT cue (same
+    // whitespace normalization as the burn-in path), not chunkCaptions' 2-3
+    // line on-screen wrapping.
+    assert.match(content, /Second cue spans two lines/);
+});
+
+test("buildSrtFromVtt with no cues in range yields empty content", () => {
+    const { content, cueCount } = buildSrtFromVtt(SAMPLE_VTT, 100, 200);
+    assert.equal(cueCount, 0);
+    assert.equal(content, "");
+});
+
+// --- AssStyleOptions (landscape clip support) -------------------------------
+test("buildAssFromVtt default style still emits the original shorts header, thick outline included", () => {
+    const { content } = buildAssFromVtt(SAMPLE_VTT, 2, 4);
+    assert.match(content, /PlayResX: 1080/);
+    assert.match(content, /PlayResY: 1920/);
+    // ...Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,...
+    assert.match(content, /Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,5,2,2,/);
+});
+
+test("landscapeCaptionStyle uses a much thinner outline than shorts, scaled to its own font size", () => {
+    const hd = landscapeCaptionStyle(1920, 1080);
+    // Shorts' outline/fontSize ratio is 5/64 ≈ 7.8% — deliberately thick/punchy.
+    // Landscape must be noticeably thinner, or it reads as "bubbly" at any size.
+    assert.ok(hd.outline / hd.fontSize < 0.05, `outline ratio ${hd.outline / hd.fontSize} should be < 5%`);
+    assert.ok(hd.outline >= 1, "outline never rounds down to invisible");
+
+    // Scales with resolution rather than staying fixed (a 4K frame needs a
+    // thicker stroke than 720p to read the same way).
+    const sd = landscapeCaptionStyle(1280, 720);
+    assert.ok(hd.outline >= sd.outline, "outline grows (or holds) with frame size");
+    assert.ok(hd.fontSize > sd.fontSize, "font size grows with frame size");
+});
+
+test("buildAssFromVtt with landscapeCaptionStyle emits that style's header and stays natural case", () => {
+    const style = landscapeCaptionStyle(1920, 1080);
+    const { content } = buildAssFromVtt(SAMPLE_VTT, 2, 4, style);
+    assert.match(content, /PlayResX: 1920/);
+    assert.match(content, /PlayResY: 1080/);
+    assert.match(content, new RegExp(`Style: Default,Arial,${style.fontSize},`));
+    // Natural case, not uppercased like the shorts style.
+    assert.match(content, /Hello world/);
+    assert.doesNotMatch(content, /HELLO WORLD/);
+});
+
 // --- caption chunking (never exceed 2 lines) --------------------------------
 test("normalizeCaptionText flattens, strips tags, uppercases", () => {
     assert.equal(normalizeCaptionText("Hello   world\nagain"), "HELLO WORLD AGAIN");
@@ -171,6 +242,49 @@ test("wrapCaptionLines never exceeds the per-line budget", () => {
     for (const line of lines) {
         assert.ok(line.length <= CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
     }
+});
+
+test("wrapCaptionLines balances line lengths instead of cramming the first line full", () => {
+    // A pure greedy fill produces "SECOND CUE SPANS TWO" (20) / "LINES" (5) —
+    // lopsided. The more even 2-line split ("SECOND CUE" / "SPANS TWO LINES",
+    // 10/15) should win instead.
+    const lines = wrapCaptionLines("SECOND CUE SPANS TWO LINES", 22);
+    assert.deepEqual(lines, ["SECOND CUE", "SPANS TWO LINES"]);
+});
+
+test("wrapCaptionLines balances a long real sentence at the landscape width", () => {
+    const text = "but it's just great to have the Bible open in front of us as we look into it. And if you happen";
+    const lines = wrapCaptionLines(text, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE);
+    assert.equal(lines.length, 3);
+    const lengths = lines.map((line) => line.length);
+    // All three lines land close in length — not one long line with a short
+    // leftover, which a plain greedy fill would produce here (42/41/10).
+    assert.ok(Math.max(...lengths) - Math.min(...lengths) <= 4, `lengths ${lengths} too uneven`);
+    for (const line of lines) {
+        assert.ok(line.length <= LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
+    }
+});
+
+test("chunkCaptions with maxLines===preferredLines never produces a 3-line caption", () => {
+    // Same sentence as above: wrapCaptionLines alone needs 3 lines at this
+    // width. With maxLines capped at preferredLines (landscapeCaptionStyle's
+    // setting), chunkCaptions must rebalance into two 2-line captions
+    // instead of one 3-line one (or a 2-line + stranded 1-line orphan).
+    const text = "but it's just great to have the Bible open in front of us as we look into it. And if you happen";
+    const chunks = chunkCaptions(text, LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, 2, 2);
+    assert.equal(chunks.length, 2);
+    for (const chunk of chunks) {
+        const lines = chunk.split("\\N");
+        assert.equal(lines.length, 2, `chunk "${chunk}" should have exactly 2 lines`);
+        for (const line of lines) {
+            assert.ok(line.length <= LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, `"${line}" within budget`);
+        }
+    }
+});
+
+test("chunkCaptions with maxLines===preferredLines leaves short text alone (no padding to 2 lines)", () => {
+    const chunks = chunkCaptions("Hello world", LANDSCAPE_CAPTION_MAX_CHARS_PER_LINE, 2, 2);
+    assert.deepEqual(chunks, ["Hello world"]);
 });
 
 test("chunkCaptions keeps captions at 2–3 lines with no lone trailing line", () => {
@@ -218,6 +332,25 @@ test("buildAssFromVtt splits a long cue into multiple ≤2-line captions timed i
         assert.ok(s >= prevEnd - 1e-6, "captions do not overlap");
         assert.ok(e > s, "caption has positive duration");
         prevEnd = e;
+    }
+});
+
+test("buildAssFromVtt with landscapeCaptionStyle never emits more than 2 lines per caption", () => {
+    const vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n"
+        + "but it's just great to have the Bible open in front of us as we look into it. And if you happen\n";
+    const style = landscapeCaptionStyle(1920, 1080);
+    const { content, cueCount } = buildAssFromVtt(vtt, 0, 9, style);
+    // Would be a single 3-line caption under the shorts-style "allow 3 to
+    // avoid an orphan" rule; landscape's strict cap instead rebalances into
+    // two 2-line captions.
+    assert.equal(cueCount, 2, "rebalances into two 2-line captions, not one 3-line one");
+
+    const dialogues = content.split("\n").filter((line) => line.startsWith("Dialogue:"));
+    for (const line of dialogues) {
+        // Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+        // — Text is everything after the 9th comma (it may itself contain commas).
+        const text = line.slice("Dialogue: ".length).split(",").slice(9).join(",");
+        assert.equal(text.split("\\N").length, 2, `"${text}" should have exactly 2 lines`);
     }
 });
 

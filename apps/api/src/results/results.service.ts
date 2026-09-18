@@ -48,6 +48,7 @@ export class ResultsService {
         videoPath: string | null;
         audioPath: string | null;
         transcriptPath: string | null;
+        srtPath: string | null;
         manifestPath: string | null;
         sizeBytes: bigint | null;
         duration: number | null;
@@ -61,6 +62,7 @@ export class ResultsService {
             videoPath: normalizeResultPath(result.videoPath),
             audioPath: normalizeResultPath(result.audioPath),
             transcriptPath: normalizeResultPath(result.transcriptPath),
+            srtPath: normalizeResultPath(result.srtPath),
             manifestPath: normalizeResultPath(result.manifestPath),
             sizeBytes: result.sizeBytes?.toString() ?? null,
             duration: result.duration,
