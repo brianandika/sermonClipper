@@ -14,6 +14,20 @@ import { CAPTION_PREFERRED_LINES, chunkCaptions, LANDSCAPE_CAPTION_MAX_CHARS_PER
 import { CaptionFormat, EditableTranscriptCue, Job, SubtitlesDraft } from '../types';
 import { formatMinSec, parseMinSec } from '../timeFormat';
 import {
+  canRedoCues,
+  canUndoCues,
+  clampCueTimes,
+  emptyCueHistory,
+  getHistoryShortcut,
+  insertCueAfter,
+  insertCueAtTime,
+  isFocusVisibleTarget,
+  prepareExportCues,
+  shouldLeaveSpaceToTarget,
+  type CueCommitOptions,
+  type InsertResult,
+} from '../subtitleEditing';
+import {
   createBurnSubtitlesJob,
   createRetryTranscriptJob,
   getJob,
@@ -30,7 +44,20 @@ interface SubtitlesFlowProps {
   sourceJob: Job;
   draft: SubtitlesDraft;
   onDraftChange: (patch: Partial<SubtitlesDraft>) => void;
+  // Every edit to the cue list goes through here (not onDraftChange) so it
+  // lands in the undo history; the updater runs against the latest cues.
+  onCuesChange: (
+    updater: (cues: EditableTranscriptCue[]) => EditableTranscriptCue[],
+    options?: CueCommitOptions,
+  ) => void;
+  onUndo: () => void;
+  onRedo: () => void;
 }
+
+// Mac uses Cmd for undo/redo, everything else Ctrl — matches getHistoryShortcut.
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
+const UNDO_HINT = IS_MAC ? '⌘Z' : 'Ctrl+Z';
+const REDO_HINT = IS_MAC ? '⇧⌘Z' : 'Ctrl+Shift+Z';
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'canceled', 'expired'];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,20 +117,7 @@ function formatTimecode(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-// Shared by both the numeric Start/End inputs and the timeline drag handles,
-// so a cue can never invert or run past what's actually known about the
-// video. `durationHint` is Infinity until the video's own duration is known
-// (a brief window before onLoadedMetadata fires) so early edits aren't
-// wrongly clamped to 0.
-const MIN_CUE_DURATION = 0.1;
-function clampCueTimes(start: number, end: number, durationHint: number): { start: number; end: number } {
-  const safeDuration = durationHint > 0 ? durationHint : Number.POSITIVE_INFINITY;
-  const s = Math.max(0, Math.min(Number.isFinite(start) ? start : 0, safeDuration - MIN_CUE_DURATION));
-  const e = Math.max(s + MIN_CUE_DURATION, Math.min(Number.isFinite(end) ? end : s + MIN_CUE_DURATION, safeDuration));
-  return { start: s, end: e };
-}
-
-export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: SubtitlesFlowProps) {
+export default function SubtitlesFlow({ sourceJob, draft, onDraftChange, onCuesChange, onUndo, onRedo }: SubtitlesFlowProps) {
   const [loadingCues, setLoadingCues] = useState(false);
   const [cuesError, setCuesError] = useState<string | null>(null);
   const [prepMessage, setPrepMessage] = useState('');
@@ -121,6 +135,16 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
   // it's a same-origin file).
   const videoRef = useRef<HTMLVideoElement>(null);
   const cueRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // Row to focus once it has rendered (set when a new line is inserted).
+  const pendingFocusIndexRef = useRef<number | null>(null);
+  // Keyboard-handling state: see the keydown effect below.
+  const keyDownHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  const keyUpHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  const spaceHijackedRef = useRef(false);
+  const pointerHeldRef = useRef(false);
+  // Whether the currently focused element got focus via the keyboard, recorded
+  // at focus time (see isFocusVisibleTarget for why it can't be checked later).
+  const focusedViaKeyboardRef = useRef(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoDuration, setVideoDuration] = useState(sourceJob.result?.duration ?? 0);
@@ -142,7 +166,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     (async () => {
       try {
         const text = await getResultTranscriptText(sourceJob.result!.resultId);
-        if (!cancelled) onDraftChange({ cues: parseVtt(text), cuesLoaded: true });
+        if (!cancelled) onDraftChange({ cues: parseVtt(text), cuesLoaded: true, ...emptyCueHistory() });
       } catch (err) {
         if (!cancelled) setCuesError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -183,7 +207,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
               throw new Error('Transcription finished but produced no transcript');
             }
             const text = await getResultTranscriptText(result.resultId);
-            if (!cancelled) onDraftChange({ cues: parseVtt(text), cuesLoaded: true, prepJobId: null });
+            if (!cancelled) onDraftChange({ cues: parseVtt(text), cuesLoaded: true, prepJobId: null, ...emptyCueHistory() });
           } catch (err) {
             if (!cancelled) {
               setPrepError(err instanceof Error ? err.message : String(err));
@@ -214,31 +238,67 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     }
   };
 
+  // All cue edits below hand `onCuesChange` a pure updater that returns the
+  // SAME array when nothing actually changed, so a no-op never becomes an undo
+  // step. Keyed edits (typing) share one undo step per burst.
   const updateCueText = (index: number, text: string) => {
-    onDraftChange({ cues: draft.cues.map((cue, i) => (i === index ? { ...cue, text } : cue)) });
+    onCuesChange(
+      (cues) => (cues[index] && cues[index].text !== text
+        ? cues.map((cue, i) => (i === index ? { ...cue, text } : cue))
+        : cues),
+      { coalesceKey: `text:${index}` },
+    );
   };
 
   const removeCue = (index: number) => {
-    onDraftChange({ cues: draft.cues.filter((_, i) => i !== index) });
+    onCuesChange((cues) => cues.filter((_, i) => i !== index));
+    // Keep the selection on the same cue as the list shifts up under it.
+    setSelectedCueIndex((selected) => {
+      if (selected === null || selected === index) return null;
+      return selected > index ? selected - 1 : selected;
+    });
   };
 
   // Shared commit path for both the numeric Start/End inputs and the timeline
   // drag handles — always clamps against the video's own duration so a cue
   // can never invert or run past the end of the video.
-  const updateCueTime = (index: number, patch: { start?: number; end?: number }) => {
-    onDraftChange({
-      cues: draft.cues.map((cue, i) => {
-        if (i !== index) return cue;
-        const { start, end } = clampCueTimes(patch.start ?? cue.start, patch.end ?? cue.end, videoDuration);
-        return { ...cue, start, end };
-      }),
-    });
+  const updateCueTime = (index: number, patch: { start?: number; end?: number }, options?: CueCommitOptions) => {
+    onCuesChange((cues) => {
+      const cue = cues[index];
+      if (!cue) return cues;
+      const { start, end } = clampCueTimes(patch.start ?? cue.start, patch.end ?? cue.end, videoDuration);
+      if (Math.abs(start - cue.start) < 1e-9 && Math.abs(end - cue.end) < 1e-9) return cues;
+      return cues.map((c, i) => (i === index ? { ...c, start, end } : c));
+    }, options);
   };
 
   const seekTo = (time: number) => {
     if (videoRef.current) {
       videoRef.current.currentTime = Math.max(0, time);
     }
+  };
+
+  // Adds a new, empty line: commits it, selects it, jumps the video to it, and
+  // (via pendingFocusIndexRef, consumed after the row renders) puts the cursor
+  // in its text box ready to type.
+  const commitInsert = (result: InsertResult) => {
+    onCuesChange(() => result.cues);
+    setSelectedCueIndex(result.index);
+    pendingFocusIndexRef.current = result.index;
+    seekTo(result.cues[result.index].start);
+  };
+  const insertLineAfter = (index: number) => commitInsert(insertCueAfter(draft.cues, index, videoDuration));
+  const insertLineAtPlayhead = () => commitInsert(insertCueAtTime(draft.cues, currentTime, videoDuration));
+
+  // Stepping through history clears the selection: the index it pointed at may
+  // now be a different line (or gone) after an insert/delete is undone.
+  const undoEdit = () => {
+    setSelectedCueIndex(null);
+    onUndo();
+  };
+  const redoEdit = () => {
+    setSelectedCueIndex(null);
+    onRedo();
   };
 
   // Selecting a cue (from either the timeline or the transcript list) marks
@@ -279,13 +339,127 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
     return chunks[chunkIndex].split('\\N');
   }, [draft.cues, activeCueIndex, currentTime]);
 
+  // While the video plays, keep the active line visible by scrolling ONLY the
+  // transcript list's own scroller. (scrollIntoView would scroll the whole
+  // page too, yanking the video and timeline out of view the moment the next
+  // line becomes active.) Explicit actions — clicking a block, inserting a
+  // line — still use scrollIntoView, since there the page should follow.
   useEffect(() => {
     if (activeCueIndex < 0) return;
-    cueRowRefs.current[activeCueIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const row = cueRowRefs.current[activeCueIndex];
+    const list = row?.parentElement;
+    if (!row || !list) return;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    if (rowRect.top < listRect.top) {
+      list.scrollBy({ top: rowRect.top - listRect.top - 4, behavior: 'smooth' });
+    }
+    else if (rowRect.bottom > listRect.bottom) {
+      list.scrollBy({ top: rowRect.bottom - listRect.bottom + 4, behavior: 'smooth' });
+    }
   }, [activeCueIndex]);
 
+  // After inserting a line, focus its text box and scroll it into view as soon
+  // as its row exists. Runs after every render but is a no-op unless an insert
+  // is pending.
+  useEffect(() => {
+    const index = pendingFocusIndexRef.current;
+    if (index === null) return;
+    const row = cueRowRefs.current[index];
+    if (!row || index >= draft.cues.length) return;
+    pendingFocusIndexRef.current = null;
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    row.querySelector<HTMLInputElement>('input.shorts-transcript-edit-input')?.focus({ preventScroll: true });
+  });
+
+  // Undo/redo (or deleting) can shrink the list under the selection.
+  useEffect(() => {
+    setSelectedCueIndex((selected) => (selected !== null && selected >= draft.cues.length ? null : selected));
+  }, [draft.cues.length]);
+
+  // Keyboard shortcuts for the editor. One window listener, attached once;
+  // the handlers live in refs reassigned every render so they always see the
+  // latest props/state (a handler captured at mount would act on stale cues).
+  //  - Space plays/pauses the main video instead of scrolling the page — unless
+  //    the focused element wants Space itself (typing in a field, a
+  //    keyboard-focused button, the native video controls).
+  //  - Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z redoes, everywhere in the editor
+  //    (including inside the cue text boxes, where the browser's own per-field
+  //    undo would otherwise fight the app's single history).
+  keyDownHandlerRef.current = (event) => {
+    if (event.defaultPrevented || event.isComposing || !draft.cuesLoaded) return;
+
+    const shortcut = getHistoryShortcut(event, IS_MAC);
+    if (shortcut) {
+      // A mouse drag in progress holds onto the cue it started on; undoing
+      // under it would apply the drag to whatever ends up at that index.
+      if (pointerHeldRef.current) return;
+      event.preventDefault();
+      if (shortcut === 'undo') undoEdit();
+      else redoEdit();
+      return;
+    }
+
+    if (event.code === 'Space' || event.key === ' ') {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      const video = videoRef.current;
+      if (!video || shouldLeaveSpaceToTarget(event.target as HTMLElement | null, focusedViaKeyboardRef.current)) return;
+      // Stop the page scroll — also for auto-repeat, which must not toggle
+      // again (holding Space would otherwise flicker play/pause).
+      event.preventDefault();
+      spaceHijackedRef.current = true;
+      if (event.repeat) return;
+      if (video.paused) void video.play().catch(() => {});
+      else video.pause();
+    }
+  };
+  keyUpHandlerRef.current = (event) => {
+    // A button activates on Space *keyup*; swallow the one that belongs to a
+    // Space press we already used for play/pause.
+    if ((event.code === 'Space' || event.key === ' ') && spaceHijackedRef.current) {
+      spaceHijackedRef.current = false;
+      event.preventDefault();
+    }
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => keyDownHandlerRef.current(event);
+    const onKeyUp = (event: KeyboardEvent) => keyUpHandlerRef.current(event);
+    const onPointerDown = () => { pointerHeldRef.current = true; };
+    const onPointerEnd = () => { pointerHeldRef.current = false; };
+    const onFocusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement) focusedViaKeyboardRef.current = isFocusVisibleTarget(event.target);
+    };
+    // Losing window focus can swallow the keyup/pointerup we'd reset on.
+    const onWindowBlur = () => {
+      pointerHeldRef.current = false;
+      spaceHijackedRef.current = false;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerup', onPointerEnd);
+    window.addEventListener('pointercancel', onPointerEnd);
+    window.addEventListener('focusin', onFocusIn);
+    window.addEventListener('blur', onWindowBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerup', onPointerEnd);
+      window.removeEventListener('pointercancel', onPointerEnd);
+      window.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('blur', onWindowBlur);
+    };
+  }, []);
+
+  // What actually gets exported: blank placeholder lines dropped, the rest in
+  // chronological order (see prepareExportCues).
+  const exportCues = useMemo(() => prepareExportCues(draft.cues), [draft.cues]);
+  const blankLineCount = draft.cues.length - draft.cues.filter((cue) => cue.text.trim() !== '').length;
+
   const handleBurn = async () => {
-    if (draft.cues.length === 0) return;
+    if (exportCues.length === 0) return;
     const isSrt = draft.captionFormat === 'srt';
     setBurning(true);
     setBurnError(null);
@@ -296,7 +470,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
       const created = await createBurnSubtitlesJob({
         assetId: sourceJob.assetId,
         sourceJobId: sourceJob.jobId,
-        captionsVtt: buildVttText(draft.cues),
+        captionsVtt: buildVttText(exportCues),
         captionFormat: draft.captionFormat,
       });
 
@@ -421,10 +595,41 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
       <section className="shorts-transcript-editor">
         <div className="shorts-transcript-editor-head">
           <h2 className="shorts-section-title">Transcript</h2>
+          <div className="subtitle-editor-toolbar">
+            <button
+              type="button"
+              className="btn btn-secondary subtitle-toolbar-btn"
+              onClick={undoEdit}
+              disabled={!canUndoCues(draft)}
+              title={`Undo (${UNDO_HINT})`}
+            >
+              ↶ Undo
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary subtitle-toolbar-btn"
+              onClick={redoEdit}
+              disabled={!canRedoCues(draft)}
+              title={`Redo (${REDO_HINT})`}
+            >
+              ↷ Redo
+            </button>
+            <button
+              type="button"
+              className="btn subtitle-toolbar-btn"
+              onClick={insertLineAtPlayhead}
+              title="Add a new line at the playhead (or right after the line the playhead is on)"
+            >
+              ＋ Add line
+            </button>
+          </div>
         </div>
-        <p className="shorts-hint">Fix typos, adjust times, delete lines you don't want captioned, then choose an output below.</p>
+        <p className="shorts-hint">
+          Fix typos, adjust times, add or delete lines, then choose an output below.
+          {' '}Space plays/pauses · {UNDO_HINT} undo · {REDO_HINT} redo.
+        </p>
         {draft.cues.length === 0 ? (
-          <p className="shorts-hint">No transcript cues were found for this video.</p>
+          <p className="shorts-hint">No lines yet — use “Add line” to create one at the playhead.</p>
         ) : (
           <div className="shorts-transcript-edit-list">
             {draft.cues.map((cue, index) => (
@@ -450,7 +655,7 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
                   aria-label={`Start time for cue at ${formatTimecode(cue.start)}`}
                   onChange={(event) => {
                     const parsed = parseMinSec(event.target.value);
-                    if (parsed !== null) updateCueTime(index, { start: parsed });
+                    if (parsed !== null) updateCueTime(index, { start: parsed }, { coalesceKey: `start:${index}` });
                   }}
                 />
                 <span className="shorts-transcript-edit-time-sep">–</span>
@@ -462,17 +667,41 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
                   aria-label={`End time for cue at ${formatTimecode(cue.start)}`}
                   onChange={(event) => {
                     const parsed = parseMinSec(event.target.value);
-                    if (parsed !== null) updateCueTime(index, { end: parsed });
+                    if (parsed !== null) updateCueTime(index, { end: parsed }, { coalesceKey: `end:${index}` });
                   }}
                 />
                 <input
                   className="shorts-transcript-edit-input"
                   type="text"
                   value={cue.text}
+                  placeholder="Type the caption…"
                   onChange={(event) => updateCueText(index, event.target.value)}
                   aria-label={`Cue text at ${formatTimecode(cue.start)}`}
                 />
-                <button type="button" className="btn remove-clip" title="Delete this cue" onClick={() => removeCue(index)}>
+                {/* stopPropagation: the row's own onClick selects the row, which
+                    would otherwise override the selection these buttons set. */}
+                <button
+                  type="button"
+                  className="btn subtitle-row-btn"
+                  title="Add a new line after this one"
+                  aria-label={`Add a line after the cue at ${formatTimecode(cue.start)}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    insertLineAfter(index);
+                  }}
+                >
+                  ＋
+                </button>
+                <button
+                  type="button"
+                  className="btn remove-clip"
+                  title="Delete this cue"
+                  aria-label={`Delete the cue at ${formatTimecode(cue.start)}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeCue(index);
+                  }}
+                >
                   ✕
                 </button>
               </div>
@@ -512,8 +741,16 @@ export default function SubtitlesFlow({ sourceJob, draft, onDraftChange }: Subti
 
       {burnError && <p className="shorts-error">{burnError}</p>}
 
+      {blankLineCount > 0 && (
+        <p className="shorts-hint" style={{ textAlign: 'center' }}>
+          {exportCues.length === 0
+            ? 'Type some text into at least one line to export.'
+            : `${blankLineCount} empty line${blankLineCount === 1 ? '' : 's'} won't be included in the export.`}
+        </p>
+      )}
+
       <div className="shorts-prep-actions" style={{ marginTop: '1.25rem' }}>
-        <button type="button" className="btn" disabled={burning || draft.cues.length === 0} onClick={handleBurn}>
+        <button type="button" className="btn" disabled={burning || exportCues.length === 0} onClick={handleBurn}>
           {burning
             ? (draft.captionFormat === 'srt' ? 'Exporting SRT…' : 'Burning in subtitles…')
             : (draft.captionFormat === 'srt' ? 'Export SRT' : 'Burn in Subtitles')}

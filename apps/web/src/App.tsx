@@ -7,7 +7,8 @@ import SubtitlesFlow from './components/SubtitlesFlow';
 import JobsFlow from './components/JobsFlow';
 import ResultsFlow from './components/ResultsFlow';
 import TranscribeResultsFlow from './components/TranscribeResultsFlow';
-import { Asset, Job, Result, Session, SubtitlesDraft } from './types';
+import { Asset, EditableTranscriptCue, Job, Result, Session, SubtitlesDraft } from './types';
+import { commitCueEdit, emptyCueHistory, redoCueEdit, undoCueEdit, type CueCommitOptions } from './subtitleEditing';
 
 function createSubtitlesDraft(sourceJobId: string): SubtitlesDraft {
   return {
@@ -16,6 +17,7 @@ function createSubtitlesDraft(sourceJobId: string): SubtitlesDraft {
     cuesLoaded: false,
     prepJobId: null,
     captionFormat: 'burned',
+    ...emptyCueHistory(),
   };
 }
 
@@ -49,6 +51,17 @@ function App() {
   const patchSubtitlesDraft = (patch: Partial<SubtitlesDraft>) => {
     setSubtitlesDraft((prev) => (prev ? { ...prev, ...patch } : prev));
   };
+  // Every edit to the cue list goes through here so it lands in the undo
+  // history. `updater` runs against the LATEST cues (not whatever the caller
+  // last rendered) and must be pure — React StrictMode runs it twice.
+  const updateSubtitlesCues = (
+    updater: (cues: EditableTranscriptCue[]) => EditableTranscriptCue[],
+    options?: CueCommitOptions,
+  ) => {
+    setSubtitlesDraft((prev) => (prev ? commitCueEdit(prev, updater(prev.cues), options) : prev));
+  };
+  const undoSubtitlesEdit = () => setSubtitlesDraft((prev) => (prev ? undoCueEdit(prev) : prev));
+  const redoSubtitlesEdit = () => setSubtitlesDraft((prev) => (prev ? redoCueEdit(prev) : prev));
   // Asset backing a transcribe-only "View Result" page (no Result row exists for
   // transcribeSource jobs — the video + transcript come straight from the asset).
   const [transcribeAsset, setTranscribeAsset] = useState<Asset | null>(null);
@@ -345,6 +358,9 @@ function App() {
             sourceJob={subtitlesSourceJob}
             draft={subtitlesDraft}
             onDraftChange={patchSubtitlesDraft}
+            onCuesChange={updateSubtitlesCues}
+            onUndo={undoSubtitlesEdit}
+            onRedo={redoSubtitlesEdit}
           />
         )}
         {flow === 'jobs' && (
