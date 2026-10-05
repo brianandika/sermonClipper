@@ -134,6 +134,12 @@ export interface SubtitlesDraft {
   // User's choice for the export action below, defaulting to 'burned' (the
   // original always-burn behavior).
   captionFormat: CaptionFormat;
+  // Undo/redo history of `cues` (see subtitleEditing.ts), lifted with the
+  // draft so it survives switching tabs just like the edits themselves.
+  cuePast: EditableTranscriptCue[][];
+  cueFuture: EditableTranscriptCue[][];
+  lastEditKey: string | null;
+  lastEditAt: number;
 }
 
 // One AI-suggested shorts moment from the sermon transcript (heading +
